@@ -1,0 +1,90 @@
+{
+  "$comment": "Blue Shell Speech - project overrides. See CLAUDE.md for the reasoning behind every entry here.",
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect-env.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-destructive-git.sh\""
+          }
+        ]
+      }
+    ]
+  },
+
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": false
+  },
+
+  "permissions": {
+    "deny": [
+      "Skill(postgres-patterns)",
+
+      "Skill(build)",
+      "Skill(workflow)",
+      "Skill(conductor)",
+      "Skill(kickoff)",
+      "Skill(project-bootstrap)",
+      "Skill(presearch)",
+      "Skill(presearch2)",
+
+      "Skill(search-first)",
+
+      "Skill(superpowers:brainstorming)",
+      "Skill(superpowers:writing-plans)",
+      "Skill(superpowers:executing-plans)",
+      "Skill(superpowers:subagent-driven-development)",
+      "Skill(superpowers:using-superpowers)",
+      "Skill(superpowers:dispatching-parallel-agents)",
+      "Skill(superpowers:using-git-worktrees)",
+      "Skill(superpowers:finishing-a-development-branch)",
+      "Skill(superpowers:requesting-code-review)",
+      "Skill(superpowers:receiving-code-review)",
+      "Skill(superpowers:test-driven-development)",
+      "Skill(superpowers:verification-before-completion)",
+      "Skill(superpowers:writing-skills)",
+      "Skill(superpowers:systematic-debugging)"
+    ],
+
+    "allow": [
+      "Bash(dotnet:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(pnpm:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh repo view:*)",
+
+      "WebSearch",
+      "WebFetch(domain:learn.microsoft.com)",
+      "WebFetch(domain:azure.microsoft.com)",
+      "WebFetch(domain:nextjs.org)",
+      "WebFetch(domain:react.dev)",
+      "WebFetch(domain:developer.mozilla.org)",
+      "WebFetch(domain:www.w3.org)",
+      "WebFetch(domain:asha.org)",
+      "WebFetch(domain:www.hhs.gov)",
+      "WebFetch(domain:dsd.maryland.gov)"
+    ]
+  }
+}

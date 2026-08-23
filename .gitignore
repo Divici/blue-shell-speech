@@ -1,0 +1,72 @@
+# This repository is PUBLIC. Anything below must never reach a commit.
+
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pfx
+*.p12
+*.pem
+*.key
+*.jks
+*.keystore
+*.publishsettings
+**/appsettings.Development.json
+**/appsettings.Production.json
+**/appsettings.*.local.json
+secrets.json
+*credential*
+!*credential*.example*
+
+# Personal study reference, not project documentation (~/.claude/rules/study-guide.md)
+STUDY_GUIDE.md
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+.vercel/
+coverage/
+playwright-report/
+test-results/
+.pnpm-store/
+
+# .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+.vs/
+TestResults/
+*.coverage
+*.trx
+
+# Azure / infra
+.azure/
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Local clinical scratch — belt and braces. Synthetic data only ever lives in seeds.
+/scratch/
+*.local.db
+*.mdf
+*.ldf
+audio-scratch/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json

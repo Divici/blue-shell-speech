@@ -1,0 +1,26 @@
+# Shell scripts must stay LF. A CRLF shebang ("#!/bin/bash\r") fails with
+# "bad interpreter" — which would silently disable the safety hooks on checkout.
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Dockerfiles and entrypoints run in Linux containers.
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+.dockerignore text eol=lf
+
+# Normalise text, let git detect the rest.
+* text=auto
+
+# Binary — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.avif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.m4a binary
+*.wav binary
