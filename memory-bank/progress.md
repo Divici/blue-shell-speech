@@ -30,7 +30,9 @@ The data model and interfaces must accommodate all four now:
 
 ## Known issues
 
-- None yet — no code.
+- **No PHI-safe model deployment.** Only `GlobalStandard.gpt-5-mini` has quota; every
+  DataZoneStandard and regional Standard quota for the gpt-5 family is 0. Dev-only until resolved.
+- The §8.2 model benchmark cannot run yet — a second model needs quota first.
 
 ## Decisions to revisit
 
