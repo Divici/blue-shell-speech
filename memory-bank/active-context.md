@@ -33,13 +33,35 @@ Reproducible via `infra/provision-ai.sh`. Keys deliberately never read — auth 
 disqualifying for PHI. Every DataZoneStandard and regional Standard quota for the gpt-5 family
 is 0 on this subscription. See `docs/PRELAUNCH_BLOCKERS.md` item 1.
 
+## Subscriptions — dev / production split (2026-08-24)
+
+| Subscription | Role | Holds PHI |
+|---|---|---|
+| `818cd2da…` (David, currently trial) | **Development, permanently** | Never |
+| Practice PAYG (not yet created) | **Production only** | Yes, after slice 10 |
+
+Michelle is a sole proprietor **with an EIN**, so the practice can be Azure's named business
+customer directly — no LLC required. The production subscription is created fresh under the
+practice rather than transferred, because provisioning is scripted and nothing is deployed yet.
+Full reasoning: `DECISIONS.md` D024, D025; execution steps in `docs/PRELAUNCH_BLOCKERS.md` #4.
+
+**Slices 0–9 need nothing from Michelle.** The entire product builds and deploys against the dev
+subscription. Only slice 10 — BAA verification, real-entity subscription, go-live sign-off —
+requires the production subscription to exist.
+
 ## Next
 
-1. Produce the presearch §31 planning artifacts — `PRD.md`, `ARCHITECTURE.md`, `DATA_MODEL.md`,
-   `SECURITY.md`, `THREAT_MODEL.md`, `HIPAA_DATA_FLOW.md`, `AI_PIPELINE.md`, `API_SPEC.md`,
-   `UX_FLOWS.md`, `TEST_STRATEGY.md`, `DEPLOYMENT.md`, `IMPLEMENTATION_PLAN.md`.
-2. Write per-slice acceptance criteria — `slice-gauntlet` cannot run without them.
-3. Bootstrap the monorepo and the deploy pipeline.
+1. **Slice 0** — monorepo (`/web` `/api` `/docs` `/infra`), CI, deploy pipeline to the dev
+   subscription. Acceptance criteria in `docs/IMPLEMENTATION_PLAN.md`.
+2. Slices 1–9 in order, each ending green and deployed.
+3. `PRD.md` and `HIPAA_DATA_FLOW.md` still outstanding; `API_SPEC.md` and `UX_FLOWS.md` are
+   written against real endpoints and screens as their slices land.
+
+## Planning artifacts — complete
+
+`ARCHITECTURE.md` · `DATA_MODEL.md` · `SECURITY.md` · `THREAT_MODEL.md` · `AI_PIPELINE.md` ·
+`TEST_STRATEGY.md` · `DEPLOYMENT.md` · `IMPLEMENTATION_PLAN.md` · `SITE_CONTENT.md` ·
+`PRELAUNCH_BLOCKERS.md`
 
 ## Content — closed 2026-08-23
 
