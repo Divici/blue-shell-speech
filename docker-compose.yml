@@ -70,6 +70,7 @@ services:
       NODE_ENV: production
       # Server-side only. The browser never calls the API directly (BFF — D003).
       API_BASE_URL: "http://api:8080"
+      SESSION_SECRET: "${SESSION_SECRET:?set SESSION_SECRET - see web/.env.example}"
       NEXT_PUBLIC_PRACTICE_PHONE: "410-555-0100"
       NEXT_PUBLIC_PRACTICE_EMAIL: "hello@blueshellspeech.example"
     ports:

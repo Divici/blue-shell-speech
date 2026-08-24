@@ -40,6 +40,9 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# SESSION_SECRET is supplied at RUNTIME, never as a build arg — a build arg is
+# recorded in the image layer and would ship the session key inside the registry.
+
 # Non-root. A container running as root turns a code-execution bug into a container
 # takeover; this one renders PHI.
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001

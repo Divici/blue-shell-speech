@@ -206,7 +206,9 @@ test.describe("consultation", () => {
  * ship.
  */
 test.describe("navigation from a non-home route", () => {
-  for (const route of ["/consultation", "/login"]) {
+  // /login deliberately has no marketing header — an authentication page should not
+  // offer navigation back into the brochure site mid-sign-in.
+  for (const route of ["/consultation"]) {
     test(`header nav works from ${route}`, async ({ page }) => {
       await page.goto(route);
 
