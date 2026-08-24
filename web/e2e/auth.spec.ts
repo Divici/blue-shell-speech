@@ -102,3 +102,37 @@ test.describe("unauthenticated access", () => {
     expect(robots).toContain("noindex");
   });
 });
+
+/**
+ * The authenticated route group.
+ *
+ * Every route under app/(app) inherits the layout's session check and force-dynamic. These
+ * assert that inheritance actually holds — a new page added to the group must be
+ * protected by existing there, not by remembering to add a guard.
+ */
+test.describe("patient routes are protected", () => {
+  const routes = ["/dashboard", "/patients", "/patients/new"];
+
+  for (const route of routes) {
+    test(`${route} redirects to sign-in without a session`, async ({ page }) => {
+      await page.goto(route);
+      await expect(page).toHaveURL(/\/login$/);
+    });
+  }
+
+  test("a patient record is unreachable without a session", async ({ page }) => {
+    // A real-looking identifier must behave exactly like any other: redirect, reveal
+    // nothing about whether it exists.
+    await page.goto("/patients/11111111-1111-1111-1111-111111111111");
+    await expect(page).toHaveURL(/\/login$/);
+  });
+
+  test("no PHI-bearing route is cacheable", async ({ page }) => {
+    for (const route of routes) {
+      const response = await page.goto(route);
+      expect(response?.headers()["cache-control"] ?? "", route).toMatch(
+        /no-store|no-cache|private|max-age=0/,
+      );
+    }
+  });
+});
