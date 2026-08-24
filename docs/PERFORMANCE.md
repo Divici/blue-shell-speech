@@ -82,3 +82,14 @@ curl -sS -o /dev/null \
 ```
 
 Re-run after any change to image size, base image, or container resources.
+
+---
+
+## Decision (2026-08-24)
+
+**CDN in front of the public site**, deferred until the practice domain is purchased.
+`minReplicas` stays 0. See `DECISIONS.md` D038.
+
+Interim: ~22 s cold start on the dev subscription, which has no real users. **This is a
+go-live blocker** — the CDN or `minReplicas: 1` must be in place before the first parent
+visits the site.
