@@ -1,6 +1,7 @@
 using Practice.Api.Auth;
 using Practice.Api.Patients;
 using Practice.Api.Scheduling;
+using Practice.Api.Startup;
 using Practice.Application.Providers;
 using Practice.Infrastructure;
 using System.Text.Json;
@@ -53,6 +54,7 @@ builder.Services
 builder.Services.AddScoped<RequestProviderContext>();
 builder.Services.AddScoped<IProviderContext>(sp => sp.GetRequiredService<RequestProviderContext>());
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHostedService<ProviderSeeder>();
 
 var app = builder.Build();
 

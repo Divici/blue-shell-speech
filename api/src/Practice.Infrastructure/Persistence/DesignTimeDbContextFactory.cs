@@ -30,7 +30,21 @@ public sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<Pra
             ?? LocalDefault;
 
         var options = new DbContextOptionsBuilder<PracticeDbContext>()
-            .UseSqlServer(connectionString)
+            .UseSqlServer(connectionString, sql =>
+            {
+                /*
+                 * Retries, because the first migration run against Azure SQL almost always
+                 * hits a paused database.
+                 *
+                 * The free offer auto-pauses on idle, and resuming takes tens of seconds —
+                 * so the first connection fails as a "transient error" and the migration
+                 * aborts. Without this, applying migrations to a fresh environment fails
+                 * on the first attempt and succeeds on the second, which looks like
+                 * flakiness rather than the documented behaviour it is.
+                 */
+                sql.EnableRetryOnFailure(maxRetryCount: 10, TimeSpan.FromSeconds(20), null);
+                sql.CommandTimeout(180);
+            })
             .Options;
 
         /*
