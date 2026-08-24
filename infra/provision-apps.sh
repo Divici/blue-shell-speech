@@ -15,6 +15,15 @@ WEB_APP="${WEB_APP:-blueshell-${ENVIRONMENT}-web}"
 API_APP="${API_APP:-blueshell-${ENVIRONMENT}-api}"
 PLACEHOLDER="mcr.microsoft.com/k8se/quickstart:latest"
 
+# Ports the REAL images listen on, not the placeholder's.
+#
+# The placeholder serves on 80. Creating the apps with --target-port 80 produced ingress
+# that routed to a port nothing was listening on once the real image deployed: the app
+# reported Running, and every request returned 404. Set these to the real values from the
+# start — the placeholder is never reached anyway, because CI replaces it immediately.
+WEB_PORT="${WEB_PORT:-3000}"   # Next.js standalone server
+API_PORT="${API_PORT:-8080}"   # ASPNETCORE_URLS in api/Dockerfile
+
 say() { printf '\n==> %s\n' "$1"; }
 
 exists() {
@@ -38,7 +47,7 @@ else
   az containerapp create \
     --name "$API_APP" --resource-group "$RG" --environment "$ACA_ENV" \
     --image "$PLACEHOLDER" \
-    --ingress internal --target-port 80 --transport auto \
+    --ingress internal --target-port "$API_PORT" --transport auto \
     --min-replicas 0 --max-replicas 3 \
     --cpu 0.25 --memory 0.5Gi \
     --system-assigned \
@@ -55,7 +64,7 @@ else
   az containerapp create \
     --name "$WEB_APP" --resource-group "$RG" --environment "$ACA_ENV" \
     --image "$PLACEHOLDER" \
-    --ingress external --target-port 80 --transport auto \
+    --ingress external --target-port "$WEB_PORT" --transport auto \
     --min-replicas 0 --max-replicas 3 \
     --cpu 0.25 --memory 0.5Gi \
     --system-assigned \

@@ -49,8 +49,38 @@ add_federated() {
     --output none 2>/dev/null || echo "    already exists"
 }
 
-add_federated "github-main"        "repo:${GH_REPO}:ref:refs/heads/main"
-add_federated "github-env-prod"    "repo:${GH_REPO}:environment:production"
+add_federated "github-main"     "repo:${GH_REPO}:ref:refs/heads/main"
+add_federated "github-env-prod" "repo:${GH_REPO}:environment:production"
+
+# ---------------------------------------------------------------------------
+# Immutable subject claims.
+#
+# GitHub issues OIDC subjects containing numeric owner and repository IDs — e.g.
+#   repo:Divici@11069106/blue-shell-speech@1344464593:ref:refs/heads/main
+# rather than the documented
+#   repo:Divici/blue-shell-speech:ref:refs/heads/main
+#
+# The IDs survive a rename, which is the point: a credential bound to a name would
+# silently follow a repository that was renamed and re-created by someone else. Azure
+# matches the subject as an exact string, so both forms must be registered.
+#
+# The IDs are stable and public. Resolved from the GitHub API so this script keeps
+# working if the repository is renamed.
+# ---------------------------------------------------------------------------
+if command -v gh >/dev/null 2>&1; then
+  OWNER="${GH_REPO%%/*}"
+  OWNER_ID=$(gh api "users/${OWNER}" --jq .id 2>/dev/null | tr -d '\r\n' || true)
+  REPO_ID=$(gh api "repos/${GH_REPO}" --jq .id 2>/dev/null | tr -d '\r\n' || true)
+
+  if [[ -n "$OWNER_ID" && -n "$REPO_ID" ]]; then
+    IMMUTABLE="repo:${OWNER}@${OWNER_ID}/${GH_REPO#*/}@${REPO_ID}"
+    add_federated "github-main-immutable"     "${IMMUTABLE}:ref:refs/heads/main"
+    add_federated "github-env-prod-immutable" "${IMMUTABLE}:environment:production"
+  else
+    echo "WARNING: could not resolve GitHub owner/repo IDs — immutable-subject" >&2
+    echo "         credentials not created. Deploys will fail with AADSTS700213." >&2
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # RBAC. Contributor on the resource group only — not the subscription, and not Owner.
