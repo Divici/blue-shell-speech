@@ -78,8 +78,24 @@ jobs:
 
       # Includes the axe sweep. Accessibility is a build gate here, not a review note —
       # the comps' own primary button failed WCAG AA, so "it looks fine" is not evidence.
+      # A throwaway key for this run only.
+      #
+      # The session layer refuses to start without one, and requires exactly 32 bytes
+      # (D045) — deliberately, because a fallback key would produce a session layer that
+      # appears to work and protects nothing. Generated per run rather than stored as a
+      # repository secret: nothing it encrypts outlives the job, and a stored key would
+      # be one more credential to rotate for no benefit.
+      - name: Generate ephemeral session key
+        run: |
+          KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
+          echo "::add-mask::$KEY"
+          echo "SESSION_SECRET=$KEY" >> "$GITHUB_ENV"
+
       - name: Run E2E
         run: npx playwright test --project=chromium --project=webkit
+        env:
+          API_BASE_URL: http://127.0.0.1:8080
+          NEXT_PUBLIC_SITE_ENV: development
 
       - uses: actions/upload-artifact@v4
         if: failure()
