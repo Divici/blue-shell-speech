@@ -172,7 +172,34 @@ scale-to-zero on both containers, SQL auto-pause-on-limit, the capacity banner, 
 
 ---
 
-## 6. Standing gates from presearch
+## 6. Public site cold start is ~22 seconds
+
+**Status:** Open. Measured 2026-08-24 — see `docs/PERFORMANCE.md`.
+
+Both containers scale to zero. The first visitor after an idle period waits **~22 seconds**
+for the homepage. Warm requests are 35 ms.
+
+Investigated and eliminated: registry pull time (a second cold start was no faster), app boot,
+and image size (quadrupling CPU changed nothing). The latency is Container Apps activation
+itself, which the application cannot optimise.
+
+For a solo practice with bursty traffic, **nearly every visitor is the first visitor**. A
+parent evaluating a speech therapist for their child will not wait 22 seconds.
+
+**Action:** put a free-tier CDN in front of the public site, caching the static pages at the
+edge (`DECISIONS.md` D038). Requires the practice domain, which is not yet purchased —
+Cloudflare cannot proxy a hostname Microsoft owns.
+
+**If deferred or refused:** `minReplicas: 1` on `web` only, ~$14/month. Same outcome, higher
+cost, no new vendor. `api` stays scale-to-zero either way.
+
+**Also required when the CDN ships:** the authenticated app must sit on a DNS-only hostname so
+PHI never crosses Cloudflare, which offers a BAA on Enterprise plans only. That boundary must
+appear in `docs/THREAT_MODEL.md` and be enforced by a check rather than left to a DNS toggle.
+
+---
+
+## 7. Standing gates from presearch
 
 These are required by the spec itself, not discoveries:
 
