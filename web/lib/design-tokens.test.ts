@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { contrastRatio, meetsAA, compositeOver } from "./contrast";
-import { palette, textOn } from "./design-tokens";
+import { palette } from "./design-tokens";
 
 /**
  * Slice 1 acceptance: "All body copy >= 4.5:1; the comps' light gray is darkened,
@@ -76,18 +76,6 @@ describe("the eyebrow label", () => {
   });
 });
 
-describe("textOn", () => {
-  it("picks a foreground that passes AA for any palette surface", () => {
-    for (const [name, surface] of Object.entries(palette)) {
-      const fg = textOn(surface);
-      const ratio = contrastRatio(fg, surface);
-      expect(
-        meetsAA(ratio, { large: false }),
-        `${name} (${surface}) -> ${fg} = ${ratio.toFixed(2)}:1`,
-      ).toBe(true);
-    }
-  });
-});
 
 /**
  * Translucent text.

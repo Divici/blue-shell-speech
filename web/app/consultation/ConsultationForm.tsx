@@ -4,7 +4,7 @@ import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { submitConsultation } from "./actions";
-import { INITIAL_CONSULTATION_STATE } from "./state";
+import { INITIAL_CONSULTATION_STATE, EMPTY_CONSULTATION_VALUES } from "./state";
 import { PREFERRED_CONTACT_OPTIONS } from "@/lib/consultation-schema";
 import { ArrowRightIcon, HeartCheckIcon } from "@/components/icons";
 
@@ -65,21 +65,38 @@ export function ConsultationForm() {
   }
 
   const hasErrors = Object.keys(state.errors).length > 0;
+  // Echoed back on a validation failure so nothing the parent typed is lost.
+  const values = state.values ?? EMPTY_CONSULTATION_VALUES;
 
   return (
     <form action={formAction} noValidate className="rounded-3xl border border-ice bg-white p-6 shadow-sm sm:p-8">
-      {hasErrors && (
+      {/*
+        A whole-form message (currently the rate limit) takes precedence over the
+        field-level summary: if the submission never reached validation, telling the
+        parent to "check the highlighted fields" would point at nothing.
+      */}
+      {state.message ? (
         <div
           role="alert"
-          className="mb-6 rounded-xl border border-coral bg-coral/10 px-4 py-3 text-sm text-navy"
+          className="mb-6 rounded-xl border border-sand bg-sand/25 px-4 py-3 text-sm text-navy"
         >
-          Please check the highlighted fields below.
+          {state.message}
         </div>
+      ) : (
+        hasErrors && (
+          <div
+            role="alert"
+            className="mb-6 rounded-xl border border-coral bg-coral/10 px-4 py-3 text-sm text-navy"
+          >
+            Please check the highlighted fields below.
+          </div>
+        )
       )}
 
       <div className="grid gap-5 sm:grid-cols-2">
         <Field
           name="parentName"
+          defaultValue={values.parentName}
           label="Your name"
           autoComplete="name"
           error={state.errors.parentName}
@@ -87,6 +104,7 @@ export function ConsultationForm() {
         />
         <Field
           name="email"
+          defaultValue={values.email}
           label="Email"
           type="email"
           autoComplete="email"
@@ -95,6 +113,7 @@ export function ConsultationForm() {
         />
         <Field
           name="phone"
+          defaultValue={values.phone}
           label="Phone"
           type="tel"
           autoComplete="tel"
@@ -108,7 +127,7 @@ export function ConsultationForm() {
           <select
             id="preferredContact"
             name="preferredContact"
-            defaultValue="Either"
+            defaultValue={values.preferredContact}
             aria-invalid={Boolean(state.errors.preferredContact)}
             aria-describedby={state.errors.preferredContact ? "preferredContact-error" : undefined}
             className={`${fieldClass} ${fieldBorder(Boolean(state.errors.preferredContact))}`}
@@ -124,12 +143,14 @@ export function ConsultationForm() {
 
         <Field
           name="childFirstName"
+          defaultValue={values.childFirstName}
           label="Your child's first name"
           error={state.errors.childFirstName}
           required
         />
         <Field
           name="childAgeMonths"
+          defaultValue={values.childAgeMonths}
           label="Your child's age in months"
           type="number"
           inputMode="numeric"
@@ -147,6 +168,7 @@ export function ConsultationForm() {
         <textarea
           id="concerns"
           name="concerns"
+          defaultValue={values.concerns}
           rows={5}
           maxLength={2000}
           aria-invalid={Boolean(state.errors.concerns)}
@@ -196,6 +218,7 @@ function FieldError({ id, message }: { id: string; message?: string | undefined 
 }
 
 interface FieldProps {
+  defaultValue?: string;
   name: string;
   label: string;
   type?: string;

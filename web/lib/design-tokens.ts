@@ -56,28 +56,3 @@ export const palette = {
 } as const;
 
 export type PaletteColor = (typeof palette)[keyof typeof palette];
-
-import { contrastRatio, meetsAA } from "./contrast";
-
-/**
- * Returns a foreground colour guaranteed to pass AA on the given surface.
- *
- * Prefers the brand ink so the page keeps its voice, and falls back to white or black
- * only when ink cannot reach 4.5:1. Guarantees a legible result rather than a
- * pretty one.
- */
-export function textOn(surface: string): string {
-  const candidates = [palette.ink, palette.navy, palette.white, "#000000"];
-
-  for (const candidate of candidates) {
-    if (meetsAA(contrastRatio(candidate, surface), { large: false })) {
-      return candidate;
-    }
-  }
-
-  // Unreachable for real surfaces: black or white clears 4.5:1 against everything
-  // except a narrow mid-gray band, which this palette does not contain.
-  return contrastRatio("#000000", surface) > contrastRatio("#FFFFFF", surface)
-    ? "#000000"
-    : "#FFFFFF";
-}

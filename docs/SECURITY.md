@@ -70,18 +70,49 @@ is pushed, and rotation is the only remedy.**
 
 ## Headers and CSP
 
+Common to every response:
+
 ```
-Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{random}';
-  style-src 'self' 'nonce-{random}'; img-src 'self' data:; connect-src 'self';
-  frame-ancestors 'none'; base-uri 'self'; form-action 'self'
 Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
 X-Content-Type-Options: nosniff
 Referrer-Policy: strict-origin-when-cross-origin
-Permissions-Policy: geolocation=(), camera=(), microphone=(self)
+X-Frame-Options: DENY
+Permissions-Policy: geolocation=(), camera=(), microphone=(self), payment=()
 ```
 
-Nonce-based, **no `unsafe-inline`**. `microphone=(self)` is the one capability the app needs and
-the only one granted.
+`microphone=(self)` is the one capability the app needs, for dictation, and the only one
+granted.
+
+**CSP differs between the two surfaces, deliberately.**
+
+### Public site — shipped
+
+```
+default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
+img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self';
+frame-ancestors 'none'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests
+```
+
+`unsafe-inline` on `script-src` is a **documented deviation**, not an oversight.
+
+A nonce must be unique per response, which requires middleware and forces every page to
+render dynamically. That would discard the static prerendering these pages rely on and
+defeat the edge caching chosen in `DECISIONS.md` D038 to fix a 22-second cold start. Next.js
+hydration emits inline bootstrap scripts, so without a nonce the choice is `unsafe-inline`
+or a page that does not work.
+
+**Why it is acceptable here specifically:** the public site renders no user-generated
+content and holds no PHI. Every string on it is a compile-time constant in
+`lib/site-content.ts`. The XSS surface a nonce would defend is empty.
+
+**This does not generalise.** The moment a public page renders anything a visitor supplied,
+this deviation is void.
+
+### Authenticated app — required, slice 2
+
+Nonce-based, **no `unsafe-inline`**. The app is dynamic by necessity, so the tradeoff above
+does not apply. This is where the control actually matters: it renders PHI and holds a
+session cookie, which is the combination `THREAT_MODEL.md` boundary 1 names.
 
 ## Input validation
 

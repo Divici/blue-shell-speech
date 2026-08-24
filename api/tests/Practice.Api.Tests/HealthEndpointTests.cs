@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace Practice.Api.Tests;
@@ -42,5 +43,47 @@ public sealed class HealthEndpointTests(WebApplicationFactory<Program> factory)
             response.Headers.CacheControl?.NoStore == true
             || response.Headers.CacheControl?.NoCache == true,
             $"Expected a no-store/no-cache directive, got: {response.Headers.CacheControl?.ToString() ?? "(none)"}");
+    }
+
+    /// <summary>
+    /// Liveness must actually run a check.
+    ///
+    /// A MapHealthChecks predicate that matches no registration returns 200 Healthy — which
+    /// is indistinguishable from every dependency passing. Asserting only the status code
+    /// produces a test that cannot fail, which is exactly what happened here: the readiness
+    /// probe matched zero checks for the whole of slice 0 and 1 while its test stayed green.
+    /// </summary>
+    [Fact]
+    public async Task Liveness_runs_at_least_one_check()
+    {
+        using var client = _factory.CreateClient();
+
+        using var response = await client.GetAsync("/health/live");
+        var body = await response.Content.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+
+        var count = json.RootElement.GetProperty("checkCount").GetInt32();
+        Assert.True(count > 0, $"/health/live ran {count} checks — it is asserting nothing.");
+    }
+
+    /// <summary>
+    /// Readiness currently runs NO dependency checks, because EF Core and the storage
+    /// client do not exist yet.
+    ///
+    /// This test pins that state deliberately rather than pretending the probe is
+    /// meaningful. When slice 3 registers the SQL and blob checks, this test fails and
+    /// must be replaced by <c>Assert.True(count > 0)</c> — a failure that is the reminder.
+    /// </summary>
+    [Fact]
+    public async Task Readiness_has_no_dependency_checks_yet()
+    {
+        using var client = _factory.CreateClient();
+
+        using var response = await client.GetAsync("/health/ready");
+        var body = await response.Content.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+
+        var count = json.RootElement.GetProperty("checkCount").GetInt32();
+        Assert.Equal(0, count);
     }
 }

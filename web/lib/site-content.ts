@@ -10,11 +10,21 @@
  * licensing problem, not a copy problem.
  */
 
+/**
+ * Root-relative, NOT bare fragments.
+ *
+ * A bare "#about" resolves against the CURRENT page, so on /consultation and /login all
+ * four nav links silently did nothing — the target element exists only on the homepage.
+ * "/#about" navigates home and then scrolls, from anywhere.
+ *
+ * The footer previously compensated by prefixing a slash itself, which meant header and
+ * footer disagreed about the same data. The data is now correct and both render it as-is.
+ */
 export const NAV_ITEMS = [
-  { label: "Home", href: "#top" },
-  { label: "About", href: "#about" },
-  { label: "Services", href: "#services" },
-  { label: "Contact", href: "#contact" },
+  { label: "Home", href: "/#top" },
+  { label: "About", href: "/#about" },
+  { label: "Services", href: "/#services" },
+  { label: "Contact", href: "/#contact" },
 ] as const;
 
 export const HERO = {
@@ -24,7 +34,9 @@ export const HERO = {
     "Personalized speech-language therapy for children birth to 5 years. " +
     "In-home care that supports growth, confidence, and everyday communication.",
   primaryCta: { label: "Request a Free Consultation", href: "/consultation" },
-  secondaryCta: { label: "Learn More", href: "#about" },
+  // Root-relative for the same reason as NAV_ITEMS. The hero only renders on the
+  // homepage today, so a bare fragment would work — until it is reused somewhere else.
+  secondaryCta: { label: "Learn More", href: "/#about" },
 } as const;
 
 /**

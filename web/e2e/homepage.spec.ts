@@ -52,11 +52,21 @@ test.describe("homepage", () => {
     await expect(page.getByRole("navigation", { name: "Main" }).getByText("Resources")).toHaveCount(0);
   });
 
-  test("navigation anchors scroll on the page rather than navigating away", async ({ page }) => {
+  /**
+   * Anchors must be ROOT-relative, not page-relative.
+   *
+   * The previous version of this test allowed /^\/?#/, which accepts both "#about" and
+   * "/#about" — and ran only on the homepage, where the two behave identically. It passed
+   * for the entire period during which the header's links were dead on every other route.
+   * A regex tolerant of both shapes cannot tell the correct one from the broken one.
+   */
+  test("navigation anchors are root-relative", async ({ page }) => {
     const nav = page.getByRole("navigation", { name: "Main" });
     for (const label of ["Home", "About", "Services", "Contact"]) {
       const href = await nav.getByRole("link", { name: label, exact: true }).getAttribute("href");
-      expect(href, `${label} should be an on-page anchor`).toMatch(/^\/?#/);
+      expect(href, `${label} must be root-relative so it works off the homepage`).toMatch(
+        /^\/#/,
+      );
     }
   });
 
@@ -186,4 +196,83 @@ test.describe("consultation", () => {
 
     await expect(page.getByRole("status")).toContainText(/thank you/i);
   });
+});
+
+/**
+ * Cross-route navigation.
+ *
+ * These run on a page that is NOT the homepage, which is the only place the dead-anchor
+ * defect was observable. Asserting nav behaviour solely on the homepage is what let it
+ * ship.
+ */
+test.describe("navigation from a non-home route", () => {
+  for (const route of ["/consultation", "/login"]) {
+    test(`header nav works from ${route}`, async ({ page }) => {
+      await page.goto(route);
+
+      const nav = page.getByRole("navigation", { name: "Main" });
+      const about = nav.getByRole("link", { name: "About", exact: true });
+
+      await expect(about).toHaveAttribute("href", "/#about");
+
+      // Actually follow it: the target section must exist where we land.
+      await about.click();
+      await page.waitForURL(/\/#about$/);
+      await expect(page.locator("#about")).toBeVisible();
+    });
+  }
+});
+
+/**
+ * Regression: a validation failure must not erase what the parent typed.
+ *
+ * The concerns field matters most — it is the longest thing on the form and the hardest
+ * to retype, and it is a parent describing their child's difficulties.
+ */
+test("consultation preserves input when validation fails", async ({ page }) => {
+  await page.goto("/consultation");
+
+  const concerns =
+    "She has around ten words but is not combining them, and she gets frustrated when we do not understand.";
+
+  await page.getByLabel("Your name").fill("Jordan Reyes");
+  await page.getByLabel("Your child's first name").fill("Maya");
+  await page.getByLabel("Your child's age in months").fill("30");
+  await page.getByLabel("What are you noticing?").fill(concerns);
+  // Deliberately invalid — everything else must survive.
+  await page.getByLabel("Email").fill("not-an-email");
+
+  await page.getByRole("button", { name: /send request/i }).click();
+
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByLabel("What are you noticing?")).toHaveValue(concerns);
+  await expect(page.getByLabel("Your name")).toHaveValue("Jordan Reyes");
+  await expect(page.getByLabel("Your child's first name")).toHaveValue("Maya");
+  await expect(page.getByLabel("Your child's age in months")).toHaveValue("30");
+});
+
+/**
+ * Security headers.
+ *
+ * docs/SECURITY.md lists these as implemented controls. Asserting them here means the
+ * document cannot drift into describing a policy that is not actually served — which is
+ * precisely what happened with CSP, absent for the whole of slice 1 while SECURITY.md
+ * presented it as shipped.
+ */
+test("serves the documented security headers", async ({ page }) => {
+  const response = await page.goto("/");
+  const headers = response?.headers() ?? {};
+
+  expect(headers["content-security-policy"], "CSP must be present").toBeTruthy();
+  expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+  expect(headers["content-security-policy"]).toContain("object-src 'none'");
+  expect(headers["x-content-type-options"]).toBe("nosniff");
+  expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  expect(headers["x-frame-options"]).toBe("DENY");
+  expect(headers["strict-transport-security"]).toContain("max-age=63072000");
+  expect(headers["permissions-policy"]).toContain("microphone=(self)");
+
+  // Next.js advertises itself by default; there is no reason to tell an attacker the
+  // framework and version.
+  expect(headers["x-powered-by"]).toBeUndefined();
 });

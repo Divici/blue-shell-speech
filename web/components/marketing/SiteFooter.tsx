@@ -51,7 +51,7 @@ export function SiteFooter() {
           <ul className="mt-4 space-y-2.5">
             {NAV_ITEMS.map((item) => (
               <li key={item.label}>
-                <Link href={`/${item.href}`} className="text-sm text-white/85 hover:text-white">
+                <Link href={item.href} className="text-sm text-white/85 hover:text-white">
                   {item.label}
                 </Link>
               </li>
