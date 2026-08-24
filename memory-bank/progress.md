@@ -5,8 +5,8 @@
 | # | Slice | Status |
 |---|---|---|
 | 0 | Monorepo, CI, deploy pipeline | **Done** 2026-08-24 — CI + deploy green, both apps live |
-| 1 | Public website + deployment | **14/15 met** — persistence blocked on slice 3; review lanes pending |
-| 2 | Provider authentication | Not started |
+| 1 | Public website + deployment | **Closed** 2026-08-24 — 14/15; super-review done, 10 findings fixed; persistence deferred to slice 3 |
+| 2 | Provider authentication | **In progress** |
 | 3 | Patient CRUD end-to-end | Not started |
 | 4 | Scheduling end-to-end | Not started |
 | 5 | Goals + manual SOAP notes | Not started |
