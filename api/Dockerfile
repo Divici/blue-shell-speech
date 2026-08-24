@@ -14,8 +14,11 @@ COPY src/Practice.Api/Practice.Api.csproj                       src/Practice.Api
 RUN dotnet restore src/Practice.Api/Practice.Api.csproj
 
 COPY src/ src/
+# Not --no-restore: the restore layer above warms the NuGet cache, so this resolves from
+# cache and stays fast, but publish re-evaluating the graph avoids a stale-assets failure
+# when the copied project files differ from the ones restore saw.
 RUN dotnet publish src/Practice.Api/Practice.Api.csproj \
-      -c Release -o /app/publish --no-restore /p:UseAppHost=false
+      -c Release -o /app/publish /p:UseAppHost=false
 
 # ---- runtime ---------------------------------------------------------------
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime
