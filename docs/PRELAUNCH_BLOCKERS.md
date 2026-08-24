@@ -95,13 +95,44 @@ subscription**. The subscription is currently under a personal account
 If the Covered Entity is Michelle's practice, the BAA names the wrong party — and that surfaces
 during BAA verification, after everything is deployed.
 
-**Action:** decide whether the subscription should move to the practice's business identity.
-If the practice is a registered entity, do this before resources multiply — migration cost grows
-with every resource added.
+**Resolved in principle 2026-08-24 — execution pending.**
 
-**Now urgent, because of blocker #5.** Upgrading to Pay-As-You-Go asks for a billing identity,
-and that identity is what the BAA names. The upgrade is the natural moment to settle this; doing
-it afterwards means migrating billing on a subscription that already holds PHI.
+Michelle operates as a **sole proprietor and has an EIN**. A sole proprietorship with an EIN is a
+valid business customer for Azure's business account type, so the practice can be the named
+Microsoft customer directly. No LLC is required.
+
+**Chosen: Path A — the subscription belongs to the practice.**
+
+| | Owner of the Azure account | Resulting chain |
+|---|---|---|
+| **A (chosen)** | Michelle / the practice | Practice is Microsoft's customer; BAA names the practice. David is Owner via RBAC |
+| B (rejected) | David | David is a Business Associate; requires a signed BAA between David and the practice, with Microsoft as subcontractor |
+
+**Why A:** one link instead of two. It also lets David be characterized as **workforce** rather
+than a Business Associate — HIPAA's definition of workforce covers people acting under a covered
+entity's direction and control, including unpaid ones. Workforce members need access
+authorization, training, and a sanctions policy, which the practice needs regardless. They do not
+need a BAA.
+
+**Not a legal determination.** Workforce-vs-Business-Associate is for whoever advises the
+practice on compliance to confirm. It does not block development.
+
+**Execution — do not transfer the existing subscription, start the correct one.** Only two empty
+AI resources exist, holding no data, and provisioning is scripted (`infra/provision-ai.sh`).
+Recreating under the right identity is one script run today; after PHI exists it is a migration.
+
+1. Michelle creates a Microsoft account for the practice.
+2. Sign up for Azure, **business/organization account type**: legal business name, **EIN**,
+   business address — **not a home address**.
+3. Go straight to **Pay-As-You-Go**, skipping the trial (closes blocker #5).
+4. She adds David as **Owner** via Subscription → Access control (IAM).
+5. Set the **$20/month budget with 50/80/100% alerts** *before* provisioning.
+6. Re-run `infra/provision-ai.sh` against the new subscription.
+7. Request `DataZoneStandard` quota — now eligible (unblocks #1).
+8. Delete the old resource group, or let the trial lapse.
+
+Free-tier allowances are per-subscription, so a fresh subscription resets Speech F0, the Azure
+SQL free offer, and the Container Apps grant.
 
 ---
 
