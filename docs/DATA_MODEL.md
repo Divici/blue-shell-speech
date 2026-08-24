@@ -299,11 +299,10 @@ Per the scope ledger, these have their seams cut now:
 
 ## Open, needs a decision before the first migration
 
-1. **Encryption at rest beyond TDE.** Azure SQL gives TDE by default, which protects the files,
-   not a compromised connection string. Always Encrypted on the highest-sensitivity columns
-   (`FirstName`, `LastName`, `DateOfBirth`) would defend against a compromised application —
-   but it breaks `LIKE` search on those exact columns, which is how a clinician finds a patient.
-   Real tradeoff, needs a call, not a default.
+1. ~~Encryption at rest beyond TDE.~~ **Resolved 2026-08-23 — TDE only, no Always Encrypted.**
+   It does not defend against a compromised application (the app holds the key), the threats it
+   does stop are ones a solo practice already occupies, and it breaks `LIKE` patient search.
+   Full reasoning in `DECISIONS.md` D012.
 2. **Retention floor for Maryland minors' records.** Drives whether `Patient` can ever be purged
    at all. §15 flags it; it needs an authoritative source, not an assumption.
 3. **Whether `TranscriptCombined` is retained after signing.** It is PHI, it is derived, and the
