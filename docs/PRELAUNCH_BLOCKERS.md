@@ -22,8 +22,18 @@ synthetic development data and **not** acceptable for PHI, because it defeats an
 claim in `HIPAA_DATA_FLOW.md`.
 
 **Action:** request `DataZoneStandard` quota (US data zone) for the chosen production model via
-Azure AI Foundry → Quotas. Redeploy and repoint config. Quota requests are reviewed by Microsoft
-and are not instant — start early.
+Azure AI Foundry → Quotas, or a Help + support quota request. Redeploy and repoint config.
+Quota requests are reviewed by Microsoft and are not instant — start early.
+
+**BLOCKED BY #5.** Attempted 2026-08-23 and rejected: a free trial subscription is not eligible
+for any quota increase. The subscription must be upgraded to Pay-As-You-Go before this item can
+be worked at all.
+
+**Ask for DataZoneStandard, not regional `Standard`.** Both keep data in the US; DataZone pins to
+the US data zone, regional pins to a single region. A Maryland practice needs US residency —
+nothing in HIPAA or Maryland law requires single-region — and far more models offer DataZone.
+Requested split: `gpt-5-mini` for extraction (high volume, schema-constrained, cheap) and
+`gpt-5.1` for generation (lower volume, better reasoning).
 
 **If refused:** regional `Standard` quota for `gpt-5.1` is the fallback (it is the only current
 GA model offering that SKU). If neither is granted, PHI cannot flow through Azure OpenAI and the
@@ -89,9 +99,49 @@ during BAA verification, after everything is deployed.
 If the practice is a registered entity, do this before resources multiply — migration cost grows
 with every resource added.
 
+**Now urgent, because of blocker #5.** Upgrading to Pay-As-You-Go asks for a billing identity,
+and that identity is what the BAA names. The upgrade is the natural moment to settle this; doing
+it afterwards means migrating billing on a subscription that already holds PHI.
+
 ---
 
-## 5. Standing gates from presearch
+## 5. Subscription is a free trial — blocks quota requests and expires
+
+**Status:** Open. Discovered 2026-08-23 when the quota request was rejected:
+
+> *Your free trial subscription isn't eligible for a quota increase. To request a quota
+> increase, first upgrade to a Pay-As-You-Go subscription.*
+
+Two consequences, one of them time-bound:
+
+1. **Blocker #1 cannot be worked at all** until the subscription is upgraded. Microsoft will not
+   review a `DataZoneStandard` quota request from a trial.
+2. **The trial expires.** Azure trials run roughly 30 days on credit, after which resources are
+   disabled until upgraded. `blueshellOpenAI`, `blueshellSpeech`, and everything else in
+   `blueShellRG` stops with it. This is not only a compliance blocker — it is an availability one.
+
+**Action:** upgrade to Pay-As-You-Go. Portal → Subscriptions → the subscription → **Upgrade**.
+No fee, no minimum, no monthly charge; remaining trial credit carries over and is consumed first.
+Free allowances survive the upgrade — Container Apps free grant, Azure SQL free offer with
+auto-pause, Speech F0.
+
+**Settle blocker #4 in the same sitting.** The upgrade captures the billing identity, which is
+the entity Microsoft's BAA names.
+
+**Risk the upgrade introduces:** the trial had a hard stop — out of credit, everything halts.
+Pay-As-You-Go has no such stop, so a runaway retry loop against Azure OpenAI bills real money.
+
+**Required at the same time, not later:** a budget in Cost Management → Budgets. **$20/month
+with alerts at 50 / 80 / 100%.** The design targets $0 outside AI spend, so anything reaching
+$10 means something is wrong and the alert should arrive at $10, not at $200.
+
+A budget alerts; it does not cap. The real spend controls in this design are architectural:
+scale-to-zero on both containers, SQL auto-pause-on-limit, the capacity banner, and the
+300-second recording cap.
+
+---
+
+## 6. Standing gates from presearch
 
 These are required by the spec itself, not discoveries:
 
