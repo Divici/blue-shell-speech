@@ -1,0 +1,29 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+# ---------------------------------------------------------------------------
+# EF Core migrations are GENERATED code.
+#
+# `dotnet ef migrations add` emits whatever the tool emits, and this project builds with
+# warnings-as-errors — so without this, every new migration breaks the build on style
+# rules nobody can act on. The realistic "fix" would be hand-editing generated files after
+# each scaffold, which is how a migration ends up subtly diverging from its snapshot.
+#
+# Correctness analysis is NOT disabled here — only style and design rules. A migration
+# that would corrupt data is still a build failure.
+# ---------------------------------------------------------------------------
+[**/Migrations/*.cs]
+generated_code = true
+dotnet_diagnostic.CA1861.severity = none   # constant array arguments
+dotnet_diagnostic.CA1062.severity = none   # validate arguments of public methods
+dotnet_diagnostic.CA1502.severity = none   # excessive complexity
+dotnet_diagnostic.IDE0300.severity = none  # collection expression
+dotnet_diagnostic.IDE0301.severity = none
+dotnet_diagnostic.IDE0028.severity = none
+dotnet_diagnostic.SA1633.severity = none

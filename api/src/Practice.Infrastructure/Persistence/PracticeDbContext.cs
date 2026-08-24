@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Practice.Domain.Auditing;
 using Practice.Domain.Providers;
 using Practice.Infrastructure.Identity;
 
@@ -15,6 +16,8 @@ public sealed class PracticeDbContext(DbContextOptions<PracticeDbContext> option
     : IdentityDbContext<PracticeUser>(options)
 {
     public DbSet<Provider> Providers => Set<Provider>();
+
+    public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
