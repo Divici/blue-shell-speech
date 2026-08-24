@@ -1,5 +1,6 @@
 using Practice.Api.Auth;
 using Practice.Api.Patients;
+using Practice.Api.Scheduling;
 using Practice.Application.Providers;
 using Practice.Infrastructure;
 using System.Text.Json;
@@ -73,6 +74,7 @@ app.UseMiddleware<ProviderContextMiddleware>();
 
 app.MapAuthEndpoints();
 app.MapPatientEndpoints();
+app.MapAppointmentEndpoints();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {

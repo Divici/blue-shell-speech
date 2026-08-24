@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Practice.Application.Providers;
 using Practice.Domain.Auditing;
 using Practice.Domain.Patients;
+using Practice.Domain.Scheduling;
 using Practice.Domain.Providers;
 using Practice.Infrastructure.Identity;
 
@@ -29,6 +30,8 @@ public sealed class PracticeDbContext(
 
     public DbSet<PatientAddress> PatientAddresses => Set<PatientAddress>();
 
+    public DbSet<Appointment> Appointments => Set<Appointment>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -54,6 +57,8 @@ public sealed class PracticeDbContext(
         builder.Entity<Guardian>().HasQueryFilter(
             g => providerContext.ProviderId != null && g.ProviderId == providerContext.ProviderId);
         builder.Entity<PatientAddress>().HasQueryFilter(
+            a => providerContext.ProviderId != null && a.ProviderId == providerContext.ProviderId);
+        builder.Entity<Appointment>().HasQueryFilter(
             a => providerContext.ProviderId != null && a.ProviderId == providerContext.ProviderId);
 
         /*
