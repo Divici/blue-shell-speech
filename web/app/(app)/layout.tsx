@@ -37,6 +37,9 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             <Link href="/dashboard" className="text-sm font-medium text-ink hover:text-blue-deep">
               Dashboard
             </Link>
+            <Link href="/today" className="text-sm font-medium text-ink hover:text-blue-deep">
+              Today
+            </Link>
             <Link href="/patients" className="text-sm font-medium text-ink hover:text-blue-deep">
               Patients
             </Link>

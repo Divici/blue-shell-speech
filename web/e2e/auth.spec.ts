@@ -111,7 +111,7 @@ test.describe("unauthenticated access", () => {
  * protected by existing there, not by remembering to add a guard.
  */
 test.describe("patient routes are protected", () => {
-  const routes = ["/dashboard", "/patients", "/patients/new"];
+  const routes = ["/dashboard", "/patients", "/patients/new", "/today"];
 
   for (const route of routes) {
     test(`${route} redirects to sign-in without a session`, async ({ page }) => {
