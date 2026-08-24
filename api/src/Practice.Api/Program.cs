@@ -1,3 +1,4 @@
+using Practice.Api.Auth;
 using Practice.Infrastructure;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -55,6 +56,8 @@ if (app.Environment.IsDevelopment())
  * port the container does not listen on. TLS enforcement lives at ingress, and HSTS is
  * set by `web` — the only tier a browser ever reaches.
  */
+
+app.MapAuthEndpoints();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {

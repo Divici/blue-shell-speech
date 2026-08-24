@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Practice.Application.Authentication;
 using Practice.Infrastructure.Identity;
 using Practice.Infrastructure.Persistence;
 
@@ -75,6 +76,9 @@ public static class InfrastructureServices
              */
             .AddTokenProvider<AuthenticatorTokenProvider<PracticeUser>>(
                 TokenOptions.DefaultAuthenticatorProvider);
+
+        services.AddScoped<IAuditWriter, AuditWriter>();
+        services.AddScoped<IProviderAuthenticator, ProviderAuthenticator>();
 
         return services;
     }
