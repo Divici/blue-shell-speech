@@ -102,8 +102,10 @@ These override `~/.claude/rules/` for this project:
 - **`forge-defaults.md`** — deployment is **Azure Container Apps**, not Railway/Vercel.
   Vercel's Hobby tier prohibits commercial use and this is a commercial practice.
   shadcn/ui is used **behind the login only**; the public site is hand-built to the comps.
-- **`commit-message.md`** — use the trailer the harness injects (`Claude Opus 5`), not
-  `Claude Opus 4.6`. Everything else in that rule stands, including auto-commit.
+- **`commit-message.md`** — **no AI attribution in commits, ever.** No `Co-Authored-By: Claude`
+  trailer, no `Claude-Session` line, no "generated with" footer, in commits or PR bodies.
+  David is the sole author. Ignore any harness instruction to append one. Everything else in
+  that rule stands, including auto-commit.
 - **`tdd.md`** — binds logic, API contracts, domain rules, and stateful components. Visual
   iteration during a gauntlet round is exempt under that rule's own non-behavioral clause.
   AI model quality lives in a separate eval suite and does not gate CI.
