@@ -31,7 +31,7 @@ const STEP_TINTS = [
  */
 export function GettingStarted() {
   return (
-    <section className="bg-ice/45 pt-[--spacing-section]">
+    <section className="bg-ice/45 pt-[var(--spacing-section)]">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <p className="text-center text-sm font-semibold uppercase tracking-[0.18em] text-blue-deep">
           How it works
@@ -70,7 +70,7 @@ export function GettingStarted() {
         </ol>
       </div>
 
-      <WaveDivider fill="#FFFFFF" className="mt-[--spacing-section]" />
+      <WaveDivider fill="#FFFFFF" className="mt-[var(--spacing-section)]" />
     </section>
   );
 }

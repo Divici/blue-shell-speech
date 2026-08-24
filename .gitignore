@@ -81,3 +81,6 @@ web/next-env.d.ts
 # Raw source images. Optimized AVIF/WebP derivatives are committed instead — a multi-MB
 # binary in a public repo's history is permanent and cannot be removed by .gitignore later.
 assets/headshot.PNG
+
+# Local screenshot scratch from visual checks
+web/shot-*.png

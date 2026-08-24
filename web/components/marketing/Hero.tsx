@@ -27,12 +27,14 @@ export function Hero() {
             {HERO.eyebrow}
           </p>
 
-          <h1 className="font-display text-[clamp(2.25rem,5.5vw,3.75rem)] font-bold leading-[1.08] text-navy">
-            {HERO.heading.map((line) => (
-              <span key={line} className="block">
-                {line}
-              </span>
-            ))}
+          {/*
+            No forced line breaks. The comp's three lines come from its column width,
+            not from hard breaks — forcing them here produced four lines at desktop and
+            worse breaks on narrow viewports. `text-balance` lets the browser distribute
+            words evenly instead.
+          */}
+          <h1 className="font-display text-[clamp(2.1rem,4.4vw,3.25rem)] font-bold leading-[1.1] text-balance text-navy">
+            {HERO.heading.join(" ")}
           </h1>
 
           <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink-muted">

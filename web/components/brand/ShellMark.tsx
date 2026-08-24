@@ -33,28 +33,30 @@ export function ShellMark({ size = 40, className, variant = "brand" }: ShellMark
       focusable="false"
       className={className}
     >
-      {/* Shell body: hinge at the bottom, fanning to a rounded top edge. */}
+      {/*
+        Scallop shell: hinge at the bottom, fanning upward to a scalloped top edge.
+        The zig-zag along the top is what reads as "shell" at 36px — a smooth arc
+        reads as a generic blob, which is what the first attempt produced.
+      */}
       <path
-        d="M32 58c-4.4 0-8-1.6-8-3.4 0-.5.3-1 .8-1.4C14.4 49.6 6 39.4 6 27.6 6 15.7 17.6 6 32 6s26 9.7 26 21.6c0 11.8-8.4 22-18.8 25.6.5.4.8.9.8 1.4 0 1.8-3.6 3.4-8 3.4Z"
+        d="M31 55c-11-2-21-12-23-27l7 3 6-6 6 5 6-6 6 6 6-5 6 6 7-3c-2 15-12 25-23 27l1 2a17 17 0 0 1-6 0Z"
         fill={body}
         fillOpacity={bodyOpacity}
       />
 
-      {/* Ribs. Drawn from the hinge outward, shortest at the edges. */}
-      <g stroke={ribs} strokeOpacity={variant === "light" ? 0.9 : 0.45} strokeWidth="2" strokeLinecap="round">
-        <path d="M32 52V13" />
-        <path d="M24.5 51 17 17.5" />
-        <path d="M39.5 51 47 17.5" />
-        <path d="M18 47.5 9.5 25" />
-        <path d="M46 47.5 54.5 25" />
+      {/* Ribs, fanning from the hinge to each scallop point. */}
+      <g
+        stroke={ribs}
+        strokeOpacity={variant === "light" ? 0.85 : 0.4}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      >
+        <path d="M32 53V24" />
+        <path d="m26 52-5-22" />
+        <path d="m38 52 5-22" />
+        <path d="M20.5 48 13 33" />
+        <path d="M43.5 48 51 33" />
       </g>
-
-      {/* Hinge highlight. */}
-      <path
-        d="M32 58c-4.4 0-8-1.6-8-3.4s3.6-3.4 8-3.4 8 1.5 8 3.4S36.4 58 32 58Z"
-        fill={ribs}
-        fillOpacity={variant === "light" ? 0.9 : 0.55}
-      />
     </svg>
   );
 }

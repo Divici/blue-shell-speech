@@ -42,7 +42,7 @@ export default function ConsultationPage() {
           <WaveDivider fill="#FFFFFF" className="mt-10" />
         </section>
 
-        <section className="bg-white pb-[--spacing-section]">
+        <section className="bg-white pb-[var(--spacing-section)]">
           <div className="mx-auto max-w-3xl px-4 sm:px-6">
             <ConsultationForm />
           </div>

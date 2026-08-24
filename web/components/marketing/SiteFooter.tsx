@@ -18,7 +18,14 @@ export function SiteFooter() {
 
   return (
     <footer className="mt-auto bg-navy text-white">
-      <WaveDivider fill="#1B4FA3" direction="up" className="-mt-px bg-white" />
+      {/*
+        Same orientation as every other divider — curve rising into the white above,
+        solid below. `direction="up"` was wrong here: rotating puts the FLAT edge on
+        top, which reads as a hard rectangle butting into the section above rather than
+        a transition. The container paints the outgoing (white) section; the wave paints
+        the incoming (navy) one.
+      */}
+      <WaveDivider fill="#1B4FA3" className="bg-white" />
 
       <div className="mx-auto grid max-w-6xl gap-10 px-4 pb-10 sm:px-6 sm:grid-cols-2 lg:grid-cols-3">
         <div>

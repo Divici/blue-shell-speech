@@ -18,7 +18,7 @@ export function GetInTouch() {
   const contact = practiceContact();
 
   return (
-    <section id="contact" className="bg-white pb-[--spacing-section]">
+    <section id="contact" className="bg-white pb-[var(--spacing-section)]">
       <div className="mx-auto max-w-4xl px-4 text-center sm:px-6">
         <p className="text-sm font-semibold uppercase tracking-[0.18em] text-blue-deep">
           {CONTACT.eyebrow}

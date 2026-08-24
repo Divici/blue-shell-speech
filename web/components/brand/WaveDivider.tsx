@@ -37,8 +37,15 @@ export function WaveDivider({ fill, direction = "down", className }: WaveDivider
           fill={fill}
           fillOpacity="0.55"
         />
+        {/*
+          Both paths must span the FULL 1440 viewBox width. An earlier version's solid
+          path ran only to x=1296 (3 x 432), leaving the last 144 units showing the
+          semi-transparent layer above as a pale rectangle at the right edge — visible
+          only at wide viewports, which is exactly where it would have been missed.
+          Segments are 480 each: 3 x 480 = 1440.
+        */}
         <path
-          d="M0 58c144-30 288-34 432-16s288 46 432 42 288-32 432-44v50H0V58Z"
+          d="M0 58c160-30 320-34 480-16s320 46 480 42 320-34 480-46v52H0V58Z"
           fill={fill}
         />
       </svg>
