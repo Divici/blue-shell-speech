@@ -1,4 +1,6 @@
 using Practice.Api.Auth;
+using Practice.Api.Patients;
+using Practice.Application.Providers;
 using Practice.Infrastructure;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -41,6 +43,16 @@ builder.Services
     .AddHealthChecks()
     .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"]);
 
+/*
+ * The provider context is SCOPED: one per request, resolved by middleware from the
+ * forwarded public id. Registering it as a singleton would leak one clinician's scope
+ * into another request — which, with a global query filter built on it, is the worst
+ * possible bug in this system.
+ */
+builder.Services.AddScoped<RequestProviderContext>();
+builder.Services.AddScoped<IProviderContext>(sp => sp.GetRequiredService<RequestProviderContext>());
+builder.Services.AddSingleton(TimeProvider.System);
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
@@ -57,7 +69,10 @@ if (app.Environment.IsDevelopment())
  * set by `web` — the only tier a browser ever reaches.
  */
 
+app.UseMiddleware<ProviderContextMiddleware>();
+
 app.MapAuthEndpoints();
+app.MapPatientEndpoints();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {

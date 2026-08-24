@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Practice.Application.Providers;
 using Practice.Infrastructure.Persistence;
 using Testcontainers.MsSql;
 
@@ -35,7 +36,9 @@ public sealed class SqlServerFixture : IAsyncLifetime
             .UseSqlServer(ConnectionString)
             .Options;
 
-        await using var db = new PracticeDbContext(options);
+        // Migrations only — no provider context needed, and none available before any
+        // provider exists.
+        await using var db = new PracticeDbContext(options, new FixedProviderContext(null));
         await db.Database.MigrateAsync();
     }
 
