@@ -16,7 +16,11 @@ const playfair = Playfair_Display({
   variable: "--font-playfair",
   subsets: ["latin"],
   display: "swap",
-  weight: ["600", "700"],
+  // 700 only. Every display heading in the site uses `font-bold`; weight 600 was
+  // requested and never referenced, costing a second font file for nothing. Fonts are
+  // the largest payload on this page, so an unused weight is the most expensive kind
+  // of dead code here.
+  weight: ["700"],
 });
 
 const inter = Inter({

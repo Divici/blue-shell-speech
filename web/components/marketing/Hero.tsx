@@ -1,5 +1,5 @@
 import Link from "next/link";
-import Image from "next/image";
+import { ResponsiveImage, IMAGE_WIDTHS } from "@/components/ResponsiveImage";
 import { HERO, BADGES } from "@/lib/site-content";
 import { WaveDivider } from "@/components/brand/WaveDivider";
 import { ArrowRightIcon, HomeIcon, HeartCheckIcon, StarIcon } from "@/components/icons";
@@ -65,13 +65,15 @@ export function Hero() {
             to a rounded rectangle rather than disappearing if unsupported.
           */}
           <div className="overflow-hidden rounded-[42%_58%_46%_54%/50%_42%_58%_50%] shadow-[0_18px_50px_-24px_rgba(27,79,163,0.45)]">
-            <Image
-              src="/img/children-1080.avif"
+            <ResponsiveImage
+              name="children"
+              widths={IMAGE_WIDTHS.children}
+              fallbackWidth={1080}
               alt="Two young children playing together with colourful building blocks"
               width={1080}
               height={720}
               priority
-              sizes="(max-width: 1024px) 100vw, 540px"
+              sizes="(max-width: 1024px) 92vw, 540px"
               className="h-auto w-full object-cover"
             />
           </div>
