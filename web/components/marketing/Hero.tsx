@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ResponsiveImage, IMAGE_WIDTHS } from "@/components/ResponsiveImage";
 import { HERO, BADGES } from "@/lib/site-content";
 import { WaveDivider } from "@/components/brand/WaveDivider";
+import { Bubbles } from "@/components/brand/Bubbles";
 import { ArrowRightIcon, HomeIcon, HeartCheckIcon, StarIcon } from "@/components/icons";
 
 const BADGE_ICONS = {
@@ -19,7 +20,8 @@ const BADGE_ICONS = {
  */
 export function Hero() {
   return (
-    <section id="top" className="relative bg-mist">
+    <section id="top" className="relative overflow-hidden bg-mist">
+      <Bubbles variant="right" />
       <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 pt-12 pb-4 sm:px-6 lg:grid-cols-2 lg:gap-14 lg:pt-20">
         <div>
           <p className="mb-4 flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.18em] text-blue-deep">

@@ -85,10 +85,48 @@ test.describe("homepage", () => {
     ).toEqual([]);
   });
 
-  test("is keyboard navigable to the primary call to action", async ({ page }) => {
-    await page.keyboard.press("Tab");
-    // The skip link is first in the DOM, deliberately.
-    await expect(page.locator(":focus")).toHaveText(/skip to main content/i);
+  /**
+   * The skip link must be the first focusable thing on the page.
+   *
+   * Asserted structurally rather than by pressing Tab, because WebKit does not focus
+   * links on Tab by default — Safari gates that behind "Full Keyboard Access". A
+   * Tab-based assertion passes in Chromium and fails in Safari while the page itself is
+   * identical and correct in both.
+   *
+   * What actually matters is unchanged across browsers: the skip link is first in DOM
+   * order, it can take focus, it becomes visible when focused, and it targets the main
+   * landmark.
+   */
+  test("the skip link is the first focusable element and reveals itself on focus", async ({
+    page,
+  }) => {
+    const skipLink = page.locator("a.skip-link");
+
+    await expect(skipLink).toHaveAttribute("href", "#main");
+
+    const isFirstFocusable = await page.evaluate(() => {
+      const focusable = document.querySelectorAll<HTMLElement>(
+        'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      return focusable[0]?.classList.contains("skip-link") ?? false;
+    });
+    expect(isFirstFocusable, "skip link must come first in DOM order").toBe(true);
+
+    // Hidden off-screen until focused, then pulled into view.
+    //
+    // Polled rather than read once: the reveal is a 150 ms CSS transition, so reading
+    // the position immediately after .focus() returns the pre-transition value and the
+    // assertion fails on a page that works correctly.
+    const before = await skipLink.evaluate((el) => el.getBoundingClientRect().top);
+    await skipLink.focus();
+    await expect
+      .poll(
+        async () => skipLink.evaluate((el) => el.getBoundingClientRect().top),
+        { message: "skip link must become visible on focus" },
+      )
+      .toBeGreaterThan(before);
+
+    await expect(page.locator("#main")).toBeAttached();
   });
 
   test("never writes to localStorage or sessionStorage", async ({ page }) => {

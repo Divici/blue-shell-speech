@@ -1,5 +1,6 @@
 import { STEPS } from "@/lib/site-content";
 import { WaveDivider } from "@/components/brand/WaveDivider";
+import { Bubbles } from "@/components/brand/Bubbles";
 import {
   CalendarIcon,
   ChatIcon,
@@ -31,7 +32,8 @@ const STEP_TINTS = [
  */
 export function GettingStarted() {
   return (
-    <section className="bg-ice/45 pt-[var(--spacing-section)]">
+    <section className="relative overflow-hidden bg-ice/45 pt-[var(--spacing-section)]">
+      <Bubbles variant="left" />
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         <p className="text-center text-sm font-semibold uppercase tracking-[0.18em] text-blue-deep">
           How it works

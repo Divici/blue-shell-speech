@@ -96,3 +96,27 @@ body {
 .skip-link:focus {
   top: 1rem;
 }
+
+/*
+ * Decorative bubbles. Gentle vertical drift, never horizontal — a horizontal transform
+ * on an absolutely positioned element is a classic cause of unexpected page-wide
+ * horizontal scrollbars.
+ *
+ * The reduced-motion rule above neutralises this animation globally.
+ */
+@keyframes bubble-drift {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateY(-14px);
+    opacity: 0.9;
+  }
+}
+
+.bubble {
+  animation: bubble-drift 7s ease-in-out infinite;
+  will-change: transform;
+}
