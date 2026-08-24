@@ -41,13 +41,22 @@ is 0 on this subscription. See `docs/PRELAUNCH_BLOCKERS.md` item 1.
 2. Write per-slice acceptance criteria — `slice-gauntlet` cannot run without them.
 3. Bootstrap the monorepo and the deploy pipeline.
 
-## Waiting on Michelle
+## Content — closed 2026-08-23
 
-- Real bio, credentials, phone, email, service area (placeholders until then).
-- Headshot (stand-in for now).
-- **One timed dictation of a fictional patient** — gives the real recap length and the first
-  eval-corpus fixture in one go.
-- Decision on the services chips: confirm AAC is named, since the cut section removed it.
+All confirmed with Michelle. Full copy in `docs/SITE_CONTENT.md`.
+
+- Bio and credentials from the comp are **accurate as written**. Do not embellish them.
+- Service area: **Maryland**.
+- **AAC confirmed** for the services chips.
+- Headshot received — `assets/headshot.PNG`, 2.4 MB, needs conversion to AVIF/WebP.
+- Recap length measured: **~3 min actual, 2–5 min range → 5-minute hard cap** per take,
+  multiple takes per session. See `DECISIONS.md` D010.
+
+**Still outstanding:** phone and email are `PLACEHOLDER`, supplied via env config, not the tree.
+
+**Still wanted, not blocking:** a dictation of a *fictional* patient as eval-corpus fixture #1.
+Michelle's timed run settled the length question; the corpus still needs synthetic audio, and
+under §22 it must be fictional — a real recap cannot become a test fixture.
 
 ## Live risks
 
