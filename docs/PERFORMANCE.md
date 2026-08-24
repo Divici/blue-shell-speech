@@ -93,3 +93,62 @@ Re-run after any change to image size, base image, or container resources.
 Interim: ~22 s cold start on the dev subscription, which has no real users. **This is a
 go-live blocker** — the CDN or `minReplicas: 1` must be in place before the first parent
 visits the site.
+
+---
+
+## Lighthouse — deployed, warm, mobile profile
+
+Run against the deployed dev app after warming the container. 2026-08-24.
+
+| Category | Score | Target |
+|---|---|---|
+| Performance | **100** | 90 |
+| Accessibility | **100** | 95 |
+| Best practices | **100** | 95 |
+| SEO | **100** | 95 |
+
+| Metric | Value | Budget |
+|---|---|---|
+| First Contentful Paint | 1.0 s | — |
+| **Largest Contentful Paint** | **1.6 s** | 2.5 s |
+| **Cumulative Layout Shift** | **0** | 0.1 |
+| Total Blocking Time | 10 ms | — |
+| Speed Index | 1.0 s | — |
+
+All slice 1 performance criteria met.
+
+### Measure against the deployment, not localhost
+
+The same page measured on `localhost` scored **95** with an LCP of **2.9 s** — a fail
+against the 2.5 s budget that sent me chasing two wrong hypotheses.
+
+The cause: Lighthouse's default *simulated* throttling models slow-4G round-trip latency on
+top of observed timings. Against localhost, where real RTT is ~0, the model produces a
+"render delay" that does not exist. The trace showed it plainly once read properly —
+**2451 ms of render delay with 0 ms of load time**, and every asset finishing within 51 ms.
+
+Two hypotheses were tested and eliminated before the artifact was identified:
+
+1. *The hero image was too large for mobile.* Real: it was hardcoded to a single 1080w
+   source and a 390px phone was downloading it. Fixed — but LCP did not move.
+2. *`decoding="sync"` was blocking presentation of a CPU-heavy AVIF.* Plausible, and
+   also wrong. Fixed — LCP did not move.
+
+Both fixes were worth keeping. Neither was the reported problem.
+
+**Rule: LCP and any latency-derived metric are measured against the deployed site.**
+Localhost is valid for accessibility, best practices, SEO, and bundle size.
+
+### Payload
+
+| Asset | Size |
+|---|---|
+| HTML | 63 KB |
+| CSS | 7 KB |
+| Fonts (Inter + Playfair 700) | ~48 KB |
+| Hero image (720w AVIF) | 20 KB |
+| Headshot (480w AVIF) | 19 KB |
+
+Playfair weight 600 was requested in the font config and never referenced — one whole font
+file for nothing. Fonts are the largest payload on this page, so an unused weight is the
+most expensive dead code available.
