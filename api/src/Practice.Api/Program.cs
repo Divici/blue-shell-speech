@@ -1,3 +1,4 @@
+using Practice.Infrastructure;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -5,6 +6,20 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
+
+/*
+ * Persistence and Identity.
+ *
+ * The connection string carries NO password. Azure SQL is configured for Entra-only
+ * authentication (DECISIONS.md D028) and the container authenticates with its managed
+ * identity, so "Authentication=Active Directory Default" is the whole credential story.
+ * Locally, docker compose supplies a throwaway SQL login that exists only on a
+ * developer's machine.
+ */
+builder.Services.AddInfrastructure(
+    builder.Configuration.GetConnectionString("Sql")
+    ?? throw new InvalidOperationException(
+        "ConnectionStrings:Sql is not configured. The API cannot start without a database."));
 
 /*
  * Two probes with different jobs (docs/ARCHITECTURE.md).
