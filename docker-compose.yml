@@ -50,7 +50,11 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Sql: "Server=sql,1433;Database=BlueShell;User Id=sa;Password=LocalDev!Passw0rd;TrustServerCertificate=True"
-      ConnectionStrings__Storage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;"
+      # `UseDevelopmentStorage=true` is the canonical Azurite shorthand — it carries no
+      # key at all. The expanded form embeds the well-known emulator account key, which
+      # is a public constant rather than a secret, but a repository that contains
+      # nothing key-shaped is easier to scan and easier to trust.
+      ConnectionStrings__Storage: "UseDevelopmentStorage=true;DevelopmentStorageProxyUri=http://azurite"
     ports:
       - "8080:8080"
     depends_on:

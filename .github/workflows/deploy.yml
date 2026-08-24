@@ -31,13 +31,20 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      image_base: ${{ steps.meta.outputs.image_base }}
     steps:
       - uses: actions/checkout@v5
 
       - id: meta
-        # Immutable tag. `latest` cannot be traced back to a commit, which makes
-        # "what is actually deployed?" unanswerable during an incident.
-        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+        run: |
+          # Immutable tag. `latest` cannot be traced back to a commit, which makes
+          # "what is actually deployed?" unanswerable during an incident.
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+          # Container registries require lowercase repository names, and the GitHub
+          # owner here is "Divici". ${{ github.repository }} preserves that capital D
+          # and buildx rejects the tag outright.
+          echo "image_base=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -55,7 +62,7 @@ jobs:
         with:
           context: ./web
           push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository }}/web:${{ steps.meta.outputs.tag }}
+          tags: ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_base }}/web:${{ steps.meta.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -64,7 +71,7 @@ jobs:
         with:
           context: ./api
           push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository }}/api:${{ steps.meta.outputs.tag }}
+          tags: ${{ env.REGISTRY }}/${{ steps.meta.outputs.image_base }}/api:${{ steps.meta.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -91,7 +98,7 @@ jobs:
             az containerapp update \
               --name "${{ env.API_APP }}" \
               --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --image "${{ env.REGISTRY }}/${{ github.repository }}/api:${{ needs.build.outputs.tag }}" \
+              --image "${{ env.REGISTRY }}/${{ needs.build.outputs.image_base }}/api:${{ needs.build.outputs.tag }}" \
               --output none
 
       - name: Deploy web
@@ -102,7 +109,7 @@ jobs:
             az containerapp update \
               --name "${{ env.WEB_APP }}" \
               --resource-group "${{ env.RESOURCE_GROUP }}" \
-              --image "${{ env.REGISTRY }}/${{ github.repository }}/web:${{ needs.build.outputs.tag }}" \
+              --image "${{ env.REGISTRY }}/${{ needs.build.outputs.image_base }}/web:${{ needs.build.outputs.tag }}" \
               --output none
 
       # Deploying is not the same as working. A revision that starts and then fails its

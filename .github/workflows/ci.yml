@@ -112,9 +112,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      # This repository is public. A pushed secret is compromised the moment it lands, and
-      # rotation is the only remedy — so the scan runs on history, not just the diff.
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Gitleaks is run directly rather than through gitleaks-action.
+      #
+      # The action derives a commit range from the push event, which breaks after any
+      # history rewrite: the "before" commit no longer exists, and it fails with
+      # "failed to scan Git repository" while simultaneously reporting no leaks — a
+      # confusing red build that says nothing about whether a secret is present.
+      #
+      # Scanning the full history is also what we actually want. This repository is
+      # public: a pushed secret is compromised the moment it lands, and rotation is the
+      # only remedy, so a diff-only scan is the wrong shape of check.
+      - name: Gitleaks (full history)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            zricethezav/gitleaks:latest \
+            detect --source /repo --config /repo/.gitleaks.toml \
+            --redact --verbose --exit-code 1

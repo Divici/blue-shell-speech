@@ -1,0 +1,41 @@
+# Gitleaks configuration.
+#
+# This repository is PUBLIC. The default rule set is extended, never weakened — an
+# allowlist entry here needs a reason that would survive being read aloud during a
+# security review.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Azurite well-known development storage account key.
+
+This is a public constant, identical for every Azurite installation and published in
+Microsoft's own documentation. It authenticates nothing beyond a local emulator running
+on a developer's machine.
+
+It appears in commit 04f8d01, where docker-compose.yml used the expanded connection
+string. Current configuration uses `UseDevelopmentStorage=true`, which carries no key —
+but git history is permanent, so the allowlist stays.
+
+This is the ONLY credential-shaped string permitted in this repository.
+"""
+regexes = [
+  '''Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==''',
+]
+
+[[allowlists]]
+description = """
+Local-only SQL Server password for the docker-compose development database.
+
+Nothing deployed uses a SQL password — Azure SQL is configured for Entra-only
+authentication and no SQL login exists (DECISIONS.md D028). This value reaches a
+throwaway container on a developer's machine and nowhere else.
+"""
+regexes = [
+  '''LocalDev!Passw0rd''',
+]
+paths = [
+  '''docker-compose\.yml''',
+]
