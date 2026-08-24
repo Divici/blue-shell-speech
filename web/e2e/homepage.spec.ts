@@ -175,7 +175,7 @@ test.describe("consultation", () => {
     await page.goto("/consultation");
     await page.getByRole("button", { name: /send request/i }).click();
 
-    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.locator("form").getByRole("alert")).toBeVisible();
     await expect(page.getByText("Please enter your name.")).toBeVisible();
     await expect(page.getByText("Please enter your child's first name.")).toBeVisible();
   });
@@ -246,7 +246,7 @@ test("consultation preserves input when validation fails", async ({ page }) => {
 
   await page.getByRole("button", { name: /send request/i }).click();
 
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.locator("form").getByRole("alert")).toBeVisible();
   await expect(page.getByLabel("What are you noticing?")).toHaveValue(concerns);
   await expect(page.getByLabel("Your name")).toHaveValue("Jordan Reyes");
   await expect(page.getByLabel("Your child's first name")).toHaveValue("Maya");

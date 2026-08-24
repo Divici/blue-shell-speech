@@ -52,7 +52,20 @@ const nextConfig: NextConfig = {
               "frame-ancestors 'none'",
               "base-uri 'self'",
               "object-src 'none'",
-              "upgrade-insecure-requests",
+              /*
+               * `upgrade-insecure-requests` is deliberately ABSENT.
+               *
+               * It rewrites every subresource request to https — including on an http
+               * origin. Chromium exempts localhost; WebKit does not, so on
+               * http://localhost every script, stylesheet and font failed with an SSL
+               * error, the page never hydrated, and every form test broke. Caught by the
+               * WebKit E2E lane; invisible in Chromium.
+               *
+               * It also buys nothing here. HSTS with a two-year max-age and preload
+               * already guarantees the browser never issues an http request to this
+               * origin in production, and the page loads no cross-origin subresources at
+               * all — `default-src 'self'` above is the actual control.
+               */
             ].join("; "),
           },
           { key: "X-Content-Type-Options", value: "nosniff" },

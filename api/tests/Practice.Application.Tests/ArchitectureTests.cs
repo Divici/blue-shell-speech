@@ -36,6 +36,19 @@ public sealed class ArchitectureTests
         return XDocument.Load(csproj)
             .Descendants("ProjectReference")
             .Select(e => (string?)e.Attribute("Include") ?? string.Empty)
+            /*
+             * Normalise separators BEFORE splitting.
+             *
+             * MSBuild writes Windows-style paths — "..\Practice.Domain\Practice.Domain.csproj"
+             * — regardless of the host OS. On Windows, Path.GetFileNameWithoutExtension
+             * splits on the backslash and returns "Practice.Domain". On Linux a backslash
+             * is an ordinary filename character, so it returns the entire relative path
+             * and the assertion fails.
+             *
+             * This passed on the developer's machine and failed in CI, which is exactly
+             * the shape of bug that makes a green local build untrustworthy.
+             */
+            .Select(include => include.Replace('\\', '/'))
             .Select(Path.GetFileNameWithoutExtension)
             .Where(name => !string.IsNullOrEmpty(name))
             .Select(name => name!)

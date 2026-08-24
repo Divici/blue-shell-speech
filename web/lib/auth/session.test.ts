@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { randomBytes } from "node:crypto";
 
 /**
  * Session encryption.
@@ -18,7 +19,15 @@ vi.mock("next/headers", () => ({
   }),
 }));
 
-const VALID_KEY = "8ZQ8kQ1sQ6xX3vN0pR7tU2wY5zB9dF1hJ4kL6nP8qS0";
+/**
+ * Generated per run, never hardcoded.
+ *
+ * A literal 32-byte key in a source file is a high-entropy string that secret scanners
+ * flag — correctly, since they cannot tell a test fixture from a live key. Generating it
+ * removes the finding rather than suppressing it, and proves the code works with a real
+ * random key rather than one chosen to be convenient.
+ */
+const VALID_KEY = randomBytes(32).toString("base64url");
 
 describe("session", () => {
   beforeEach(() => {
@@ -108,7 +117,7 @@ describe("session", () => {
   });
 
   it("rejects a key that is not 32 bytes", async () => {
-    process.env.SESSION_SECRET = "dG9vLXNob3J0";
+    process.env.SESSION_SECRET = randomBytes(16).toString("base64url");
     const { createSession } = await import("./session");
 
     await expect(
