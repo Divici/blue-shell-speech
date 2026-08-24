@@ -1,0 +1,8 @@
+bin/
+obj/
+.git
+tests/
+**/*.user
+Dockerfile
+.dockerignore
+TestResults/

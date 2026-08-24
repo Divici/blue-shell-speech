@@ -1,0 +1,20 @@
+<Project>
+
+  <!-- Inherit everything from /api/Directory.Build.props, then relax test-only rules. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+
+    <!--
+      CA1707 — underscores in member names.
+
+      Suppressed for tests only. `Domain_references_no_infrastructure` states the behaviour
+      under test in a sentence; `DomainReferencesNoInfrastructure` states the same thing less
+      legibly in a test-runner report. Warnings remain errors everywhere else, including in
+      the assertion that this file does not leak into src/.
+    -->
+    <NoWarn>$(NoWarn);CA1707</NoWarn>
+  </PropertyGroup>
+
+</Project>

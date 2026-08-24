@@ -73,3 +73,11 @@ desktop.ini
 
 # Decision log — chronological reasoning and tradeoffs, personal reference (see CLAUDE.md)
 DECISIONS.md
+
+# Next.js / build output not already covered
+web/.next/
+web/next-env.d.ts
+
+# Raw source images. Optimized AVIF/WebP derivatives are committed instead — a multi-MB
+# binary in a public repo's history is permanent and cannot be removed by .gitignore later.
+assets/headshot.PNG

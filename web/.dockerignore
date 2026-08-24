@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+build
+coverage
+playwright-report
+test-results
+.git
+.env*
+!.env.example
+Dockerfile
+.dockerignore
+e2e
+**/*.test.ts
+**/*.test.tsx

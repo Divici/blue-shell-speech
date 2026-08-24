@@ -1,0 +1,78 @@
+# Local development (docs/DEPLOYMENT.md).
+#
+# SQL Server and Azurite run locally. Azure Speech and Azure OpenAI are NOT mocked — the
+# app points at the real dev-subscription endpoints with synthetic data (DECISIONS.md D015,
+# D025). Mocking a model provider teaches nothing about latency, refusals, or malformed
+# output, which are the failure modes presearch §19 requires the app to survive.
+#
+# SYNTHETIC DATA ONLY. No real patient information enters any of this (presearch §22).
+
+name: blue-shell-speech
+
+services:
+  sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      # Local-only throwaway credential. Nothing deployed uses a SQL password —
+      # production authenticates with managed identity (docs/SECURITY.md).
+      MSSQL_SA_PASSWORD: "LocalDev!Passw0rd"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - sql-data:/var/opt/mssql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # Blob storage emulator: session audio and public resource documents live in separate
+  # containers, with different access rules (docs/THREAT_MODEL.md boundary 4).
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --skipApiVersionCheck
+    ports:
+      - "10000:10000" # blob
+      - "10001:10001" # queue — dictation jobs (DECISIONS.md D014)
+    volumes:
+      - azurite-data:/data
+
+  api:
+    build:
+      context: ./api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Sql: "Server=sql,1433;Database=BlueShell;User Id=sa;Password=LocalDev!Passw0rd;TrustServerCertificate=True"
+      ConnectionStrings__Storage: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;"
+    ports:
+      - "8080:8080"
+    depends_on:
+      sql:
+        condition: service_healthy
+      azurite:
+        condition: service_started
+
+  web:
+    build:
+      context: ./web
+    environment:
+      NODE_ENV: production
+      # Server-side only. The browser never calls the API directly (BFF — D003).
+      API_BASE_URL: "http://api:8080"
+      NEXT_PUBLIC_PRACTICE_PHONE: "410-555-0100"
+      NEXT_PUBLIC_PRACTICE_EMAIL: "hello@blueshellspeech.example"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  sql-data:
+  azurite-data:
