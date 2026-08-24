@@ -70,3 +70,6 @@ desktop.ini
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Decision log — chronological reasoning and tradeoffs, personal reference (see CLAUDE.md)
+DECISIONS.md

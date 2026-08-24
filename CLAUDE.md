@@ -111,6 +111,23 @@ These override `~/.claude/rules/` for this project:
 
 ---
 
+## Decision log
+
+`DECISIONS.md` at the repo root is **gitignored** — it exists locally but will not appear in a
+fresh clone. Do not assume it is missing because it was never created.
+
+Append an entry whenever a choice is made that would be expensive to reverse: architecture,
+vendor, data model, security posture, deployment target, a deviation from the frontend rules.
+Library picks a single PR could swap out do not need one.
+
+Each entry records the alternatives that lost and **what the choice cost us**, not just why it
+won. A decision log with no downsides in it is marketing.
+
+It is **append-only**. Supersede entries; never edit one to look correct in hindsight. That
+distinguishes it from `STUDY_GUIDE.md`, which is rewritten freely and holds current state only.
+
+---
+
 ## Public site
 
 Sections, after Michelle's edits: Header → Hero → three badges → Meet Your SLP (with a light
