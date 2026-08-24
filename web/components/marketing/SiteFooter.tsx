@@ -45,7 +45,7 @@ export function SiteFooter() {
         </div>
 
         <nav aria-label="Footer">
-          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/60">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/75">
             Quick links
           </h2>
           <ul className="mt-4 space-y-2.5">
@@ -65,7 +65,7 @@ export function SiteFooter() {
         </nav>
 
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/60">
+          <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-white/75">
             Areas of support
           </h2>
           <ul className="mt-4 space-y-2.5">
@@ -79,7 +79,7 @@ export function SiteFooter() {
       </div>
 
       <div className="border-t border-white/15">
-        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-5 text-xs text-white/65 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-5 text-xs text-white/75 sm:flex-row sm:items-center sm:justify-between sm:px-6">
           <p>
             © {year} {PRACTICE_NAME}. All rights reserved.
           </p>

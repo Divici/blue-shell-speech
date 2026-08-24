@@ -61,3 +61,33 @@ export function contrastRatio(foreground: string, background: string): number {
 export function meetsAA(ratio: number, { large }: { large: boolean }): boolean {
   return ratio >= (large ? 3 : 4.5);
 }
+
+/**
+ * Composites a translucent foreground over an opaque background and returns the
+ * resulting opaque hex.
+ *
+ * Exists because contrast-testing only opaque token pairs leaves a real gap: Tailwind's
+ * `text-white/60` produces a colour that appears in no palette and passes no test, and
+ * on the navy footer it measures 3.91:1 — a genuine WCAG failure that shipped past a
+ * suite specifically written to catch WCAG failures.
+ *
+ * @param alpha 0–1 opacity of the foreground.
+ */
+export function compositeOver(
+  foreground: string,
+  background: string,
+  alpha: number,
+): string {
+  if (alpha < 0 || alpha > 1 || Number.isNaN(alpha)) {
+    throw new Error(`Alpha must be between 0 and 1, received ${alpha}.`);
+  }
+
+  const fg = toRgb(foreground);
+  const bg = toRgb(background);
+
+  const blended = fg.map((channel, index) =>
+    Math.round(alpha * channel + (1 - alpha) * (bg[index] as number)),
+  );
+
+  return `#${blended.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}

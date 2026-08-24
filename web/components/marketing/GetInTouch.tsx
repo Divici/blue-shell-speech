@@ -40,39 +40,49 @@ export function GetInTouch() {
           </Link>
         </div>
 
-        <dl className="mx-auto mt-12 grid max-w-2xl gap-6 text-left sm:grid-cols-3">
-          <div className="flex items-start gap-3">
+        {/*
+          A list rather than a <dl>.
+
+          A description list is arguably the better semantic fit, but grouping each
+          dt/dd pair needs a wrapping <div> — permitted by the HTML spec, rejected by
+          axe's `only-dlitems` rule, and inconsistently handled by screen readers in
+          practice. An unordered list conveys the same structure with no ambiguity.
+        */}
+        <ul className="mx-auto mt-12 grid max-w-2xl gap-6 text-left sm:grid-cols-3">
+          <li className="flex items-start gap-3">
             <PhoneIcon size={20} className="mt-1 shrink-0 text-teal" />
             <div>
-              <dt className="text-sm font-semibold text-navy">Phone</dt>
-              <dd className="text-sm text-ink-muted">
-                <a href={`tel:${contact.phone.replace(/[^0-9+]/g, "")}`} className="hover:text-blue-deep">
-                  {contact.phone}
-                </a>
-              </dd>
+              <span className="block text-sm font-semibold text-navy">Phone</span>
+              <a
+                href={`tel:${contact.phone.replace(/[^0-9+]/g, "")}`}
+                className="text-sm text-ink-muted hover:text-blue-deep"
+              >
+                {contact.phone}
+              </a>
             </div>
-          </div>
+          </li>
 
-          <div className="flex items-start gap-3">
+          <li className="flex items-start gap-3">
             <MailIcon size={20} className="mt-1 shrink-0 text-teal" />
             <div>
-              <dt className="text-sm font-semibold text-navy">Email</dt>
-              <dd className="text-sm break-words text-ink-muted">
-                <a href={`mailto:${contact.email}`} className="hover:text-blue-deep">
-                  {contact.email}
-                </a>
-              </dd>
+              <span className="block text-sm font-semibold text-navy">Email</span>
+              <a
+                href={`mailto:${contact.email}`}
+                className="text-sm break-words text-ink-muted hover:text-blue-deep"
+              >
+                {contact.email}
+              </a>
             </div>
-          </div>
+          </li>
 
-          <div className="flex items-start gap-3">
+          <li className="flex items-start gap-3">
             <HomeIcon size={20} className="mt-1 shrink-0 text-teal" />
             <div>
-              <dt className="text-sm font-semibold text-navy">Service area</dt>
-              <dd className="text-sm text-ink-muted">{CONTACT.serviceArea}</dd>
+              <span className="block text-sm font-semibold text-navy">Service area</span>
+              <span className="text-sm text-ink-muted">{CONTACT.serviceArea}</span>
             </div>
-          </div>
-        </dl>
+          </li>
+        </ul>
 
         {contact.isPlaceholder && (
           /*

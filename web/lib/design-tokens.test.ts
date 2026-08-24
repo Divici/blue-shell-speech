@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { contrastRatio, meetsAA } from "./contrast";
+import { contrastRatio, meetsAA, compositeOver } from "./contrast";
 import { palette, textOn } from "./design-tokens";
 
 /**
@@ -85,6 +85,36 @@ describe("textOn", () => {
         meetsAA(ratio, { large: false }),
         `${name} (${surface}) -> ${fg} = ${ratio.toFixed(2)}:1`,
       ).toBe(true);
+    }
+  });
+});
+
+/**
+ * Translucent text.
+ *
+ * Tailwind opacity modifiers (`text-white/75`) produce colours that appear in no
+ * palette. The first version of this suite tested only opaque pairs, and `text-white/60`
+ * shipped to the footer at 3.91:1 — caught by axe in the E2E run, not here. These are
+ * the values that gap allowed through.
+ */
+describe("translucent text on the navy footer", () => {
+  const FOOTER_OPACITIES = [0.7, 0.75, 0.85] as const;
+
+  for (const alpha of FOOTER_OPACITIES) {
+    it(`white at ${alpha * 100}% passes AA on navy`, () => {
+      const composited = compositeOver(palette.white, palette.navy, alpha);
+      const ratio = contrastRatio(composited, palette.navy);
+      expect(meetsAA(ratio, { large: false }), `${ratio.toFixed(2)}:1`).toBe(true);
+    });
+  }
+
+  it("70% is the floor — 65% and below fail", () => {
+    for (const alpha of [0.6, 0.65]) {
+      const composited = compositeOver(palette.white, palette.navy, alpha);
+      expect(
+        meetsAA(contrastRatio(composited, palette.navy), { large: false }),
+        `white/${alpha * 100} must not be used`,
+      ).toBe(false);
     }
   });
 });

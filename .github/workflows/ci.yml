@@ -53,6 +53,41 @@ jobs:
       - name: Build
         run: npm run build
 
+  e2e:
+    name: web · e2e + accessibility
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      # Chromium and WebKit. WebKit is not optional (DECISIONS.md D023): every hard
+      # constraint in the dictation design is a Safari behaviour, and Michelle's phone
+      # is not running Chromium.
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium webkit
+
+      # Includes the axe sweep. Accessibility is a build gate here, not a review note —
+      # the comps' own primary button failed WCAG AA, so "it looks fine" is not evidence.
+      - name: Run E2E
+        run: npx playwright test --project=chromium --project=webkit
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
   api:
     name: api · build, test
     runs-on: ubuntu-latest
