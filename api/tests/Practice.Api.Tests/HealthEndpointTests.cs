@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text.Json;
-using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace Practice.Api.Tests;
 
@@ -11,10 +10,21 @@ namespace Practice.Api.Tests;
 /// it traffic. A broken probe does not fail loudly — it produces a container that silently
 /// never receives requests, or one that restarts forever.
 /// </summary>
-public sealed class HealthEndpointTests(WebApplicationFactory<Program> factory)
-    : IClassFixture<WebApplicationFactory<Program>>
+[Collection(UsesSqlServer.Name)]
+public sealed class HealthEndpointTests(SqlServerFixture sql) : IDisposable
 {
-    private readonly WebApplicationFactory<Program> _factory = factory;
+    /*
+     * Uses the containerised database, not a bare WebApplicationFactory.
+     *
+     * The API refuses to start without ConnectionStrings:Sql — deliberately, since an app
+     * that boots without a database only fails later and less clearly. These tests
+     * previously passed locally only because appsettings.Development.json supplied one,
+     * and that file is GITIGNORED: CI had no connection string and every health test
+     * failed there while passing on the developer's machine.
+     */
+    private readonly PracticeApiFactory _factory = new(sql.ConnectionString);
+
+    public void Dispose() => _factory.Dispose();
 
     [Theory]
     [InlineData("/health/live")]

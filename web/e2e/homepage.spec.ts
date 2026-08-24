@@ -247,10 +247,21 @@ test("consultation preserves input when validation fails", async ({ page }) => {
   await page.getByRole("button", { name: /send request/i }).click();
 
   await expect(page.locator("form").getByRole("alert")).toBeVisible();
-  await expect(page.getByLabel("What are you noticing?")).toHaveValue(concerns);
-  await expect(page.getByLabel("Your name")).toHaveValue("Jordan Reyes");
-  await expect(page.getByLabel("Your child's first name")).toHaveValue("Maya");
-  await expect(page.getByLabel("Your child's age in months")).toHaveValue("30");
+
+  /*
+   * A longer timeout than the default 5s.
+   *
+   * Each assertion waits on a full Server Action round trip followed by a keyed remount
+   * of the form. Under parallel workers hitting a single Next server — and WebKit is the
+   * slower engine here — 5s is a budget, not a correctness threshold. The test passed
+   * 3/3 in isolation and failed intermittently in the full run, which is the signature of
+   * a timeout rather than a defect.
+   */
+  const roundTrip = { timeout: 15_000 };
+  await expect(page.getByLabel("What are you noticing?")).toHaveValue(concerns, roundTrip);
+  await expect(page.getByLabel("Your name")).toHaveValue("Jordan Reyes", roundTrip);
+  await expect(page.getByLabel("Your child's first name")).toHaveValue("Maya", roundTrip);
+  await expect(page.getByLabel("Your child's age in months")).toHaveValue("30", roundTrip);
 });
 
 /**

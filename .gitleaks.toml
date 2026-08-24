@@ -39,3 +39,19 @@ regexes = [
 paths = [
   '''docker-compose\.yml''',
 ]
+
+[[allowlists]]
+description = """
+Ephemeral session keys in web/lib/auth/session.test.ts.
+
+An earlier revision of this file hardcoded a 32-byte base64url key as a test fixture. It
+was never a live secret — it existed only to exercise the JWE round trip — and the file
+now generates its key with crypto.randomBytes at runtime instead.
+
+Git history is permanent, so the full-history scan still finds the old literal. The
+allowlist is scoped to this one path: any credential-shaped string elsewhere still fails
+the build.
+"""
+paths = [
+  '''web/lib/auth/session\.test\.ts''',
+]

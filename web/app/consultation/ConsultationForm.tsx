@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { submitConsultation } from "./actions";
@@ -37,6 +37,35 @@ export function ConsultationForm() {
     INITIAL_CONSULTATION_STATE,
   );
 
+  const hasErrors = Object.keys(state.errors).length > 0;
+
+  /*
+   * UNCONTROLLED inputs, remounted when the server echoes values back.
+   *
+   * Two approaches were tried and rejected:
+   *
+   *   defaultValue alone — React resets an uncontrolled form after a form action
+   *   completes, and ignores defaultValue changes on an already-mounted input, so every
+   *   field emptied the moment validation failed.
+   *
+   *   Fully controlled inputs — the value reverted under WebKit, and the form serialised
+   *   EMPTY values on submit. Controlled inputs depend on every value change reaching
+   *   React; anything that sets the DOM value without a synthetic event silently loses it.
+   *
+   * Remounting via `key` keeps the inputs uncontrolled — so the form always serialises
+   * exactly what the DOM holds — while letting a new defaultValue take effect. The
+   * generation counter changes only when the server returns different values.
+   */
+  const [echoed, setEchoed] = useState(state.values);
+  const [generation, setGeneration] = useState(0);
+
+  if (state.values !== echoed) {
+    setEchoed(state.values);
+    setGeneration((g) => g + 1);
+  }
+
+  const values = state.values ?? EMPTY_CONSULTATION_VALUES;
+
   if (state.status === "success") {
     return (
       <div
@@ -64,12 +93,9 @@ export function ConsultationForm() {
     );
   }
 
-  const hasErrors = Object.keys(state.errors).length > 0;
-  // Echoed back on a validation failure so nothing the parent typed is lost.
-  const values = state.values ?? EMPTY_CONSULTATION_VALUES;
 
   return (
-    <form action={formAction} noValidate className="rounded-3xl border border-ice bg-white p-6 shadow-sm sm:p-8">
+    <form key={generation} action={formAction} noValidate className="rounded-3xl border border-ice bg-white p-6 shadow-sm sm:p-8">
       {/*
         A whole-form message (currently the rate limit) takes precedence over the
         field-level summary: if the submission never reached validation, telling the
