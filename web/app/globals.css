@@ -1,26 +1,98 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * Design tokens from comp 2's design-system sidebar.
+ *
+ * These mirror lib/design-tokens.ts, which is the source of truth and is contrast-tested.
+ * Two values deliberately differ from the comp:
+ *
+ *   --color-blue-action  the comp's #2D7FF9 is 3.81:1 with white text and fails WCAG AA.
+ *                        Used for any surface carrying white label text.
+ *   --color-ink-muted    the comp's body-copy gray fails AA. Darkened.
+ *
+ * See DECISIONS.md D032 and D033.
+ */
+@theme {
+  --color-blue: #2d7ff9;
+  --color-blue-action: #1d6fe0;
+  --color-blue-deep: #1b5fcc;
+  --color-navy: #1b4fa3;
+
+  --color-ice: #e8f3ff;
+  --color-mist: #f5faff;
+
+  --color-teal: #4e9e9a;
+  --color-sand: #ffd786;
+  --color-coral: #ff8fa3;
+  --color-amber: #ffbd59;
+
+  --color-ink: #3a4553;
+  --color-ink-muted: #55606e;
+
+  --font-display: var(--font-playfair), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Section rhythm. clamp() keeps vertical spacing proportional without breakpoints. */
+  --spacing-section: clamp(3.5rem, 8vw, 7rem);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/*
+ * No dark-mode block, deliberately.
+ *
+ * The comps define one palette, and a healthcare practice's public site is read by
+ * parents on unfamiliar devices — an auto-inverted palette that nobody has checked for
+ * contrast is worse than a single well-tested one. The authenticated app may revisit
+ * this; the marketing site will not.
+ */
+
+html {
+  scroll-behavior: smooth;
+  /* The header is sticky, so anchor targets must clear it. */
+  scroll-padding-top: 5.5rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-mist);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  /* Belt and braces: no section may cause a horizontal scrollbar. */
+  overflow-x: hidden;
+}
+
+/*
+ * Visible focus everywhere. The comps do not specify a focus style, and the browser
+ * default disappears against these blues — so it is defined here rather than left to
+ * chance on a site that must be fully keyboard-navigable.
+ */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 3px solid var(--color-blue-action);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Skip link: visible only when focused. */
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -4rem;
+  z-index: 100;
+  transition: top 150ms ease;
+}
+
+.skip-link:focus {
+  top: 1rem;
 }
