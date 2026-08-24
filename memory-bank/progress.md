@@ -4,7 +4,7 @@
 
 | # | Slice | Status |
 |---|---|---|
-| 0 | Monorepo, CI, deploy pipeline | **In progress** — scaffold + CI done, deploy pending |
+| 0 | Monorepo, CI, deploy pipeline | **Done** 2026-08-24 — CI + deploy green, both apps live |
 | 1 | Public website + deployment | Not started |
 | 2 | Provider authentication | Not started |
 | 3 | Patient CRUD end-to-end | Not started |
