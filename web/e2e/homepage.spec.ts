@@ -92,9 +92,16 @@ test.describe("homepage", () => {
   });
 
   test("never writes to localStorage or sessionStorage", async ({ page }) => {
-    // CLAUDE.md non-negotiable #4. Enforced by lint in source, and here at runtime.
+    // CLAUDE.md non-negotiable #4. Enforced by lint in source, and here at runtime —
+    // lint cannot see storage written by a dependency, only by our own code.
+    //
+    // This assertion has to READ the APIs it forbids, so the rule is disabled for
+    // exactly these two lines. It runs inside page.evaluate, in the browser, and never
+    // ships: the whole point of the test is to prove the value is 0.
     const storage = await page.evaluate(() => ({
+      // eslint-disable-next-line no-restricted-properties
       local: window.localStorage.length,
+      // eslint-disable-next-line no-restricted-properties
       session: window.sessionStorage.length,
     }));
     expect(storage).toEqual({ local: 0, session: 0 });
