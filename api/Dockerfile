@@ -7,6 +7,10 @@ WORKDIR /src
 # Restore first, against project files only, so a source-only change does not invalidate
 # the restore layer.
 COPY Directory.Build.props ./
+# .editorconfig is REQUIRED for the build, not just for editors: it scopes analyzers off
+# EF Core's generated migrations. Without it the container build fails on style rules that
+# the local build never applies — a build that only works outside Docker.
+COPY .editorconfig ./
 COPY src/Practice.Domain/Practice.Domain.csproj                 src/Practice.Domain/
 COPY src/Practice.Application/Practice.Application.csproj       src/Practice.Application/
 COPY src/Practice.Infrastructure/Practice.Infrastructure.csproj src/Practice.Infrastructure/
