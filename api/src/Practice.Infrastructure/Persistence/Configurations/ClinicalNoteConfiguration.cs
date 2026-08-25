@@ -74,6 +74,10 @@ public sealed class ClinicalNoteConfiguration : IEntityTypeConfiguration<Clinica
 
         builder.Property(n => n.RowVersion).IsRowVersion();
 
+        // Computed from the four section columns. A column would be a second answer that
+        // could disagree with them.
+        builder.Ignore(n => n.CanBeDiscarded);
+
         builder.HasIndex(n => new { n.PatientId, n.AppointmentId });
         builder.HasIndex(n => n.SupersedesNoteId);
 
@@ -123,5 +127,6 @@ public sealed class ClinicalNoteConfiguration : IEntityTypeConfiguration<Clinica
          * and the only way to have both a trigger and EF on the same table.
          */
         builder.ToTable(t => t.HasTrigger("TR_ClinicalNotes_PreventSignedEdits"));
+        builder.ToTable(t => t.HasTrigger("TR_ClinicalNotes_PreventDeletingRealNotes"));
     }
 }

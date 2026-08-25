@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { formatVisitRange, type DayVisit } from "@/lib/api/schedule";
+import { documentationBlockedReason } from "@/lib/visit-documentation";
 import { HomeIcon, CalendarIcon } from "@/components/icons";
 import { StartNoteButton } from "./StartNoteButton";
 
@@ -8,11 +9,16 @@ import { StartNoteButton } from "./StartNoteButton";
  *
  * Built for a phone in a car, stationary: large touch targets, the patient and the time
  * legible at a glance, and one action per card — document this visit.
+ *
+ * `now` comes from the page so every card on a schedule agrees about what has started.
+ * Two cards reading the clock independently could straddle a visit's start time and
+ * disagree about the same minute.
  */
-export function VisitCard({ visit }: { visit: DayVisit }) {
+export function VisitCard({ visit, now = new Date() }: { visit: DayVisit; now?: Date }) {
   const isDone = visit.status === "Completed";
   const isOff = visit.status === "Cancelled" || visit.status === "NoShow";
   const patientName = `${visit.patientFirstName} ${visit.patientLastName}`;
+  const blocked = documentationBlockedReason(visit, now);
 
   return (
     <li
@@ -66,8 +72,12 @@ export function VisitCard({ visit }: { visit: DayVisit }) {
       {/*
         The note entry point.
 
-        Which of the two renders is decided by data already in the day payload, so no card
-        makes a request of its own to find out whether it has been documented.
+        Which of the three renders is decided by data already in the day payload, so no
+        card makes a request of its own to find out whether it has been documented.
+
+        An existing note wins over the block: a note written before the visit was called
+        off is still a clinical record, and the gate removes the entry point, never the
+        way back to something already written.
       */}
       <div className="mt-4 border-t border-ice pt-4">
         {visit.notePublicId ? (
@@ -84,6 +94,8 @@ export function VisitCard({ visit }: { visit: DayVisit }) {
 
             {visit.noteStatus && <NoteStatusBadge status={visit.noteStatus} />}
           </div>
+        ) : blocked ? (
+          <p className="text-sm text-ink-muted">{blocked}</p>
         ) : (
           <StartNoteButton visitPublicId={visit.publicId} patientName={patientName} />
         )}

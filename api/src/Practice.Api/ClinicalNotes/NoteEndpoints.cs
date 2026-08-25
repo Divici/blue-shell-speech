@@ -29,6 +29,7 @@ public static class NoteEndpoints
         notes.MapGet("/{publicId:guid}/history", GetNoteHistory);
         notes.MapPost("/", CreateDraft);
         notes.MapPut("/{publicId:guid}", UpdateDraft);
+        notes.MapDelete("/{publicId:guid}", DiscardDraft);
         notes.MapPost("/{publicId:guid}/sign", SignNote);
         notes.MapPost("/{publicId:guid}/amend", AmendNote);
 
@@ -204,11 +205,17 @@ public static class NoteEndpoints
     ///
     /// The whole point of versioning is that the history is readable — an amended record
     /// where only the latest version can be retrieved is not an audit trail.
+    ///
+    /// THIS IS THE READ PATH THE PRODUCT USES. The note screen opens here, so an
+    /// unaudited version of it means there is no record that a clinical note was ever
+    /// opened — the gap docs/SECURITY.md §Audit exists to close, and the one D012 counts
+    /// on when it accepts TDE over Always Encrypted.
     /// </summary>
     private static async Task<IResult> GetNoteHistory(
         Guid publicId,
         PracticeDbContext db,
         IProviderContext provider,
+        IAuditWriter audit,
         CancellationToken ct)
     {
         if (provider.ProviderId is null) return Results.Unauthorized();
@@ -222,6 +229,19 @@ public static class NoteEndpoints
             .OrderByDescending(n => n.VersionNumber)
             .ToListAsync(ct);
 
+        /*
+         * Written AFTER the read resolved, and describing what actually came back.
+         *
+         * This endpoint returns full S/O/A/P for every version, so "a note was viewed"
+         * understates it — the row records how many versions were disclosed. A count is
+         * not clinical content; the four sections never touch this table.
+         */
+        await audit.WriteAsync(AuditEvent.Record(
+            AuditEventType.PatientViewed, AuditOutcome.Success,
+            providerId: provider.ProviderId,
+            entityType: nameof(ClinicalNote), entityPublicId: publicId,
+            metadata: $"versions={versions.Count}"), ct);
+
         return Results.Ok(versions.Select(NoteDto.From).ToList());
     }
 
@@ -229,6 +249,7 @@ public static class NoteEndpoints
         CreateNoteRequest request,
         PracticeDbContext db,
         IProviderContext provider,
+        TimeProvider clock,
         CancellationToken ct)
     {
         if (provider.ProviderId is null) return Results.Unauthorized();
@@ -247,6 +268,21 @@ public static class NoteEndpoints
                 message = "This visit already has a note. Amend it rather than starting another.",
             });
         }
+
+        /*
+         * Checked SECOND, so "this visit already has a note" stays the first-class
+         * conflict: the day view's start-or-open action turns that one into "open the one
+         * that exists" (D061), and a note written before a visit was cancelled must stay
+         * reachable.
+         *
+         * Checked at all because the day view is read on a phone between houses, and a
+         * mis-tap on a cancelled, no-show, or future card used to create an empty draft
+         * that Sign() refuses. Runs only after the provider filter resolved the
+         * appointment, so someone else's visit is still 404 rather than a 409 confirming
+         * it exists (D052).
+         */
+        var blocked = appointment.DocumentationBlockedReason(clock.GetUtcNow().UtcDateTime);
+        if (blocked is not null) return Results.Conflict(new { message = blocked });
 
         var note = ClinicalNote.CreateDraft(
             provider.ProviderId.Value, appointment.PatientId, appointment.Id);
@@ -288,6 +324,65 @@ public static class NoteEndpoints
 
         await db.SaveChangesAsync(ct);
         return Results.Ok(NoteDto.From(note));
+    }
+
+    /// <summary>
+    /// Discards an empty draft.
+    ///
+    /// THE ONLY DELETE IN THIS API, and narrow on purpose: an unsigned note with nothing
+    /// in any of the four sections. Anything else is a clinical record and answers 409.
+    ///
+    /// It exists because the alternative was worse. "Start note" creates the row, Sign()
+    /// refuses an empty one, and UX_ClinicalNotes_OneCurrentPerAppointment blocks a
+    /// replacement — so a mis-tap left a permanent "Draft" badge on a child's chart that
+    /// could only be cleared by writing content onto it and signing it into immutability.
+    ///
+    /// The rule is enforced here, in the aggregate (ClinicalNote.CanBeDiscarded), and in
+    /// the database (TR_ClinicalNotes_PreventDeletingRealNotes), on the D058 principle
+    /// that application-layer rules hold until someone opens SSMS.
+    /// </summary>
+    private static async Task<IResult> DiscardDraft(
+        Guid publicId,
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        CancellationToken ct)
+    {
+        if (provider.ProviderId is null) return Results.Unauthorized();
+
+        var note = await db.ClinicalNotes.SingleOrDefaultAsync(n => n.PublicId == publicId, ct);
+        if (note is null) return Results.NotFound();
+
+        if (!note.CanBeDiscarded)
+        {
+            // Two reasons, two sentences. "That is not allowed" tells a clinician nothing
+            // about which rule she met.
+            return Results.Conflict(new
+            {
+                message = note.Status == NoteStatus.Draft
+                    ? "This note has something written in it, so it is kept. Clear the sections and save if you meant to start again."
+                    : "This note is signed. A signed clinical record is never deleted — amend it instead.",
+            });
+        }
+
+        var version = note.VersionNumber;
+        db.ClinicalNotes.Remove(note);
+        await db.SaveChangesAsync(ct);
+
+        await audit.WriteAsync(AuditEvent.Record(
+            AuditEventType.NoteDiscarded, AuditOutcome.Success,
+            providerId: provider.ProviderId,
+            entityType: nameof(ClinicalNote), entityPublicId: publicId,
+            metadata: $"version={version}"), ct);
+
+        /*
+         * A body, not 204.
+         *
+         * The BFF's request helper maps 404 to null, so a 204 would be indistinguishable
+         * from "that note is not yours" and the UI would report a delete that never
+         * happened. Same reason the goal transitions answer with one.
+         */
+        return Results.Ok(new { PublicId = publicId });
     }
 
     private static async Task<IResult> SignNote(

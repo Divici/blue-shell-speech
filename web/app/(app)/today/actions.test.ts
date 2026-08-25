@@ -116,6 +116,29 @@ describe("startNote", () => {
     expect(api.redirect).not.toHaveBeenCalled();
   });
 
+  /**
+   * A visit the API refuses to document — cancelled, a no-show, or one that has not
+   * started — arrives as a 409 with a sentence written for a clinician. The day view
+   * normally renders that reason instead of the button, so reaching this path means the
+   * schedule was stale; the reason is what makes the refusal actionable, and
+   * VISIT_UNAVAILABLE would replace it with "refresh and try again", which is exactly
+   * what will not help.
+   *
+   * Safe to surface: the gate only ever runs on a visit this provider can already see.
+   * Anything belonging to someone else is a 404 long before it (D052).
+   */
+  it("explains a refusal the API described", async () => {
+    api.createDraft.mockRejectedValue(
+      new api.ApiConflictError("This visit was cancelled. There is nothing to document."),
+    );
+    api.forAppointment.mockResolvedValue(null);
+
+    const result = await run(VISIT);
+
+    expect(result.status).toBe("error");
+    expect(result.message).toBe("This visit was cancelled. There is nothing to document.");
+  });
+
   it("does not call the API without a visit", async () => {
     const result = await run();
 

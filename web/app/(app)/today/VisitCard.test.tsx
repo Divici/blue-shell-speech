@@ -105,3 +105,60 @@ describe("VisitCard note action", () => {
     expect(button).toHaveTextContent("Start note");
   });
 });
+
+/**
+ * Visits that cannot be documented.
+ *
+ * The schedule is read on a phone between houses and every card looked identical, so one
+ * mis-tap created an empty draft on a cancelled visit, a no-show, or next week's session.
+ * The API refuses those (Appointment.DocumentationBlockedReason); the card explains it
+ * before the tap rather than after.
+ */
+describe("VisitCard on a visit that cannot be documented", () => {
+  // 14:00 Eastern on the day of the fixture visit, i.e. the visit has started.
+  const DURING = new Date("2026-06-15T18:30:00Z");
+
+  it("offers no note on a cancelled visit, and says why", () => {
+    render(<VisitCard visit={visit({ status: "Cancelled" })} now={DURING} />);
+
+    expect(screen.queryByRole("button", { name: /start note/i })).not.toBeInTheDocument();
+    // The sentence, not the status badge — which also reads "Cancelled".
+    expect(screen.getByText(/nothing to document/i)).toHaveTextContent(/cancelled/i);
+  });
+
+  it("offers no note on a no-show, and says why", () => {
+    render(<VisitCard visit={visit({ status: "NoShow" })} now={DURING} />);
+
+    expect(screen.queryByRole("button", { name: /start note/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/no-show/i)).toBeInTheDocument();
+  });
+
+  it("offers no note on a visit that has not started", () => {
+    render(
+      <VisitCard visit={visit()} now={new Date("2026-06-15T17:00:00Z")} />,
+    );
+
+    expect(screen.queryByRole("button", { name: /start note/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/not started/i)).toBeInTheDocument();
+  });
+
+  /**
+   * A note written before the visit was called off is still a clinical record. The gate
+   * removes the entry point, never the way back to a note that already exists.
+   */
+  it("still links to a note that already exists on a cancelled visit", () => {
+    const notePublicId = "8f3c1d2e-0000-4000-8000-0000000000b2";
+
+    render(
+      <VisitCard
+        visit={visit({ status: "Cancelled", notePublicId, noteStatus: "Signed" })}
+        now={DURING}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: /open note/i })).toHaveAttribute(
+      "href",
+      `/notes/${notePublicId}`,
+    );
+  });
+});

@@ -70,6 +70,27 @@ public sealed class ClinicalNote : Entity
     /// </summary>
     public byte[]? ContentHash { get; private set; }
 
+    /// <summary>
+    /// Whether this row can be discarded outright rather than kept forever.
+    ///
+    /// TRUE ONLY for an unsigned draft with nothing in any of the four sections. The rule
+    /// that a signed note is never modified is untouched by this: an empty draft attests
+    /// to nothing and documents nothing. Keeping it leaves a permanent "Draft" badge on a
+    /// visit that was never documented, clearable only by writing content onto that
+    /// child's chart and signing it into immutability — which is a worse outcome than the
+    /// mis-tap that created it.
+    ///
+    /// SupersedesNoteId is deliberately NOT tested here. An amendment starts as a copy of
+    /// a signed version and Sign() refuses an empty note, so no amendment can be empty.
+    /// That chain is asserted rather than assumed — see An_amendment_is_never_discardable.
+    /// </summary>
+    public bool CanBeDiscarded =>
+        Status == NoteStatus.Draft
+        && string.IsNullOrWhiteSpace(Subjective)
+        && string.IsNullOrWhiteSpace(Objective)
+        && string.IsNullOrWhiteSpace(Assessment)
+        && string.IsNullOrWhiteSpace(Plan);
+
     public static ClinicalNote CreateDraft(
         long providerId,
         long patientId,

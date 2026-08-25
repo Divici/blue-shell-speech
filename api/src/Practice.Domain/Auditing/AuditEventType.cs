@@ -23,6 +23,12 @@ public enum AuditEventType
     NoteSigned = 40,
     NoteAmended = 41,
 
+    /// <summary>
+    /// An empty, unsigned draft was removed — the only row this application ever deletes
+    /// from the clinical tables, and therefore the one that most needs a record.
+    /// </summary>
+    NoteDiscarded = 42,
+
     AudioDeleted = 60,
     ExportGenerated = 61,
 }

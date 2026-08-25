@@ -248,4 +248,85 @@ public sealed class ClinicalNoteTests
     {
         Assert.True(Draft().VerifyIntegrity());
     }
+
+    // --------------------------------------------------------- discarding
+
+    /*
+     * Non-negotiable #5 covers SIGNED notes. An empty draft attests to nothing and
+     * documents nothing, and keeping it forever leaves a permanent "Draft" badge on a
+     * visit that was never documented — clearable only by writing content onto that
+     * child's chart and signing it into immutability.
+     */
+
+    [Fact]
+    public void An_empty_draft_can_be_discarded()
+    {
+        var note = ClinicalNote.CreateDraft(providerId: 1, patientId: 2, appointmentId: 3);
+
+        Assert.True(note.CanBeDiscarded);
+    }
+
+    /// <summary>Whitespace is not content, and neither is a stray newline from a paste.</summary>
+    [Fact]
+    public void A_draft_holding_only_whitespace_can_be_discarded()
+    {
+        var note = ClinicalNote.CreateDraft(1, 2, 3);
+        note.UpdateContent("   ", "\n", "\t", " ");
+
+        Assert.True(note.CanBeDiscarded);
+    }
+
+    /// <summary>
+    /// One sentence in any section is clinical content. Each is checked separately: a
+    /// predicate that only looked at Subjective would discard an objective section
+    /// somebody typed first.
+    /// </summary>
+    [Fact]
+    public void A_draft_with_content_in_any_section_cannot_be_discarded()
+    {
+        foreach (var section in Enumerable.Range(0, 4))
+        {
+            var note = ClinicalNote.CreateDraft(1, 2, 3);
+            var fields = new string[4];
+            fields[section] = "Independent requesting 60%.";
+            note.UpdateContent(fields[0], fields[1], fields[2], fields[3]);
+
+            Assert.False(note.CanBeDiscarded);
+        }
+    }
+
+    [Fact]
+    public void A_signed_note_cannot_be_discarded()
+    {
+        Assert.False(Signed().CanBeDiscarded);
+    }
+
+    /// <summary>
+    /// The chain the predicate relies on, asserted rather than assumed.
+    ///
+    /// CanBeDiscarded does not test SupersedesNoteId. It does not need to: Amend() starts
+    /// the next version as a copy of a signed one, and Sign() refuses an empty note, so no
+    /// amendment can ever be empty. If either of those two rules is ever relaxed, this
+    /// test fails and the predicate needs the extra clause.
+    /// </summary>
+    [Fact]
+    public void An_amendment_is_never_discardable()
+    {
+        var amendment = Signed().Amend("Corrected the accuracy figure.");
+
+        Assert.Equal(NoteStatus.Draft, amendment.Status);
+        Assert.NotNull(amendment.AmendmentReason);
+        Assert.False(amendment.CanBeDiscarded);
+    }
+
+    /// <summary>A superseded version is a retained record, not a discardable draft.</summary>
+    [Fact]
+    public void A_superseded_version_cannot_be_discarded()
+    {
+        var original = Signed();
+        original.Amend("Corrected the accuracy figure.");
+
+        Assert.Equal(NoteStatus.Amended, original.Status);
+        Assert.False(original.CanBeDiscarded);
+    }
 }

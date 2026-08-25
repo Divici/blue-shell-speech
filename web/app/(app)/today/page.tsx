@@ -25,6 +25,14 @@ export default async function TodayPage(props: PageProps<"/today">) {
   const schedule = await scheduleApi.day(date);
   const visits = schedule?.visits ?? [];
 
+  /*
+   * One reading of the clock for the whole page.
+   *
+   * The cards use it to decide whether a visit has started, and two cards reading it
+   * independently could straddle the same minute and disagree about the same visit.
+   */
+  const now = new Date();
+
   return (
     <>
       <div className="flex flex-wrap items-center gap-3">
@@ -77,7 +85,7 @@ export default async function TodayPage(props: PageProps<"/today">) {
         <>
           <ol className="mt-8 space-y-4">
             {visits.map((visit) => (
-              <VisitCard key={visit.publicId} visit={visit} />
+              <VisitCard key={visit.publicId} visit={visit} now={now} />
             ))}
           </ol>
 

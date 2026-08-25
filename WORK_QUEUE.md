@@ -52,7 +52,7 @@ return: every one is a form against an endpoint that already exists and is alrea
       signal** — either the nav is genuinely unreachable on a phone, which is a real
       defect on the page parents actually land on, or the test is desktop-shaped like the
       one in D040.
-- [ ] **1.10 Fix the four reviewer findings against `0d75f37`** — run this BEFORE the
+- [x] **1.10 Fix the four reviewer findings against `0d75f37`** — run this BEFORE the
       remaining Phase 1 forms; F2 is a compliance gap, not a polish item.
       - **F1** "Start note" renders on every undocumented visit, including `Cancelled`,
         `NoShow`, and future ones, and posts four empty strings. `Sign()` refuses an empty
@@ -178,6 +178,7 @@ Append one line per completed task: date, task id, commit sha.
 - 2026-08-25 · 1.1 appointment creation UI · practice-local to UTC conversion tested across both DST boundaries; 409 conflict surfaces the clashing visit time
 - 2026-08-24 · 1.2 start-a-note entry point · `DayVisit` carries the current note's id and status, resolved in the day query as one OUTER APPLY rather than a request per card; `startNote` server action creates the draft and treats the API's 409 as "open the one that exists", so a duplicate clinical record stays impossible outside the UI too
 - 2026-08-24 · 1.3 goals UI · the AAC fields are **unmounted** on a non-AAC domain rather than hidden, and the BFF refuses the combination rather than blanking it, so the form asks the same question the aggregate and `CK_Goals_AacFieldsOnlyOnAacGoals` ask; marking met and discontinuing are transitions with no delete anywhere in the chain, and closed goals stay on the page. Found while testing: the goals projection translated `Nullable<TEnum>.ToString()` into SQL and returned `""` where the DTO promised `null`, so "no cue level recorded" arrived as a value
+- 2026-08-25 · 1.10 four reviewer findings · **F1** a note can only be started on a visit that has begun and was not cancelled or marked a no-show (`Appointment.DocumentationBlockedReason`, mirrored in `web/lib/visit-documentation.ts` so the card explains rather than offers), and an unsigned draft with nothing in any section can be discarded — endpoint, aggregate, and a new DELETE trigger all say the same thing, audited as `NoteDiscarded` (D064). **F2** `GetNoteHistory` audits the read it performs, recording how many versions were disclosed; that endpoint is the one the product actually opens notes through, and it was writing nothing (D065). **F3/F4** both tenancy tests were counting the wrong thing — F3 on a unique `PublicId` that answered 1 regardless, F4 on a collection the Appointment filter had already emptied. Each was rewritten to need a row the API cannot produce, then **verified by deleting the filter it names and watching it fail** (D066). Splitting F4 in two came out of that: deleting the Appointment filter left it green because the day query's join to `Patients` was covering for it
 
 ---
 

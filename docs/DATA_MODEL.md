@@ -182,10 +182,21 @@ a non-null `AmendmentReason`. The old row keeps `IsCurrent = 0` forever. Nothing
 - Filtered unique index on `(AppointmentId) WHERE IsCurrent = 1`.
 - `CHECK` constraint: `SupersedesNoteId IS NULL OR AmendmentReason IS NOT NULL`.
 - An `UPDATE` trigger rejecting changes to SOAP fields where `Status <> 'Draft'`.
+- A `DELETE` trigger rejecting the removal of anything but an **empty draft**.
 
-The trigger is the belt to the application's braces. Application-layer immutability survives
+The triggers are the belt to the application's braces. Application-layer immutability survives
 exactly until someone writes a migration script or opens SSMS at 11pm. `ContentHash` makes any
 after-the-fact tampering detectable rather than merely prohibited.
+
+**The one deletable row.** A draft with `Status = Draft` and nothing in any of the four SOAP
+sections may be deleted — `ClinicalNote.CanBeDiscarded`, `DELETE /notes/{publicId}`, audited as
+`NoteDiscarded`. That case exists because a note is created the moment the clinician taps
+"start note" on the schedule: an empty draft attests to nothing, cannot be signed, and cannot be
+replaced while it exists, so keeping it would leave a permanent "Draft" badge on a chart
+clearable only by writing content onto it. See D064.
+
+A note may only be **started** for a visit that has begun and was not cancelled or marked a
+no-show (`Appointment.DocumentationBlockedReason`).
 
 ### DictationSession & DictationTake
 

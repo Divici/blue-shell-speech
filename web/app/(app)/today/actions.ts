@@ -27,6 +27,17 @@ export async function startNote(
 
   let notePublicId: string | null = null;
 
+  /*
+   * The API's own wording, kept for the case where no note turns out to be behind the
+   * conflict — a cancelled visit, a no-show, or one that has not started yet. Those are
+   * rules the clinician needs to read; VISIT_UNAVAILABLE would replace them with "refresh
+   * and try again", which is the one thing that will not help.
+   *
+   * Safe to surface: the API only reaches that check on a visit this provider can already
+   * see. Anything belonging to somebody else is a 404 well before it (D052).
+   */
+  let refusal: string | null = null;
+
   try {
     /*
      * Create first, ask second.
@@ -53,6 +64,8 @@ export async function startNote(
       };
     }
 
+    refusal = error.message;
+
     /*
      * The visit gained a note between the page rendering and this tap — another tab, a
      * double tap, or a schedule left open. Opening the one that exists is what the
@@ -67,7 +80,7 @@ export async function startNote(
   }
 
   if (!notePublicId) {
-    return { status: "error", message: VISIT_UNAVAILABLE };
+    return { status: "error", message: refusal ?? VISIT_UNAVAILABLE };
   }
 
   // So the schedule shows "Open note" rather than "Start note" on the way back.

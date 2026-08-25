@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using Practice.Api.Auth;
@@ -396,24 +397,137 @@ public sealed class SchedulingTests(SqlServerFixture sql) : IDisposable
     }
 
     /// <summary>
-    /// Another provider's note must not surface here, even though the visit it hangs off
-    /// is already filtered out. Two independent scopes, both of which must hold.
+    /// A note belonging to another provider must not surface on this schedule, even when
+    /// it hangs off a visit this provider can legitimately see.
+    ///
+    /// The old version of this test asserted <c>Assert.Empty(day.Visits)</c>, which is the
+    /// APPOINTMENT filter's work — it removes every visit a foreign note could hang from,
+    /// leaving the ClinicalNote filter with nothing to do. Deleting that filter outright
+    /// left the test green while its comment claimed two independent scopes.
+    ///
+    /// The ClinicalNote filter is load-bearing in exactly one shape: a note owned by one
+    /// provider on ANOTHER provider's visit. No API path produces that row — CreateDraft
+    /// stamps the caller's provider onto whatever it writes — so it is planted directly.
+    /// Delete the filter and this test goes red; that is the point of it.
     /// </summary>
     [Fact]
     public async Task The_daily_view_carries_no_note_from_another_provider()
     {
         using var michelle = ClientFor(await SeedProviderAsync("Michelle"));
-        using var stranger = ClientFor(await SeedProviderAsync("Stranger"));
+        var strangerPublicId = await SeedProviderAsync("Stranger");
 
-        var theirPatient = await CreatePatientAsync(stranger);
-        var theirVisit = await ScheduleAsync(stranger, theirPatient, Utc(2026, 6, 13, 14, 0));
-        await CreateNoteAsync(stranger, theirVisit);
+        var herPatient = await CreatePatientAsync(michelle);
+        var herVisit = await ScheduleAsync(michelle, herPatient, Utc(2026, 6, 13, 16, 0));
+        await PlantForeignNoteAsync(herVisit, strangerPublicId);
 
         var day = await michelle.GetFromJsonAsync<DayScheduleDto>("/appointments/day/2026-06-13");
 
         Assert.NotNull(day);
-        Assert.Empty(day.Visits);
+        var hers = Assert.Single(day.Visits);
+        Assert.Equal(herVisit, hers.PublicId);
+
+        // Her own visit reads as undocumented, because the note sitting on it is not hers.
+        Assert.Null(hers.NotePublicId);
+        Assert.Null(hers.NoteStatus);
     }
+
+    /// <summary>
+    /// No visit from another provider reaches this schedule either — the other half of
+    /// the pair, kept as its own test so each one names a single filter.
+    ///
+    /// Two shapes, because they are stopped by different things. The stranger's visit for
+    /// the stranger's own patient is stopped twice: by the Appointment filter, and again
+    /// by the day query's join to Patients, which is filtered as well. On its own it
+    /// cannot tell you whether the Appointment filter is still there. The planted row can
+    /// — a visit the stranger owns on MICHELLE's patient joins to a patient she can see,
+    /// which leaves the Appointment filter as the only thing between it and her day.
+    /// </summary>
+    [Fact]
+    public async Task The_daily_view_carries_no_visit_from_another_provider()
+    {
+        using var michelle = ClientFor(await SeedProviderAsync("Michelle"));
+        var strangerPublicId = await SeedProviderAsync("Stranger");
+        using var stranger = ClientFor(strangerPublicId);
+
+        var theirPatient = await CreatePatientAsync(stranger);
+        await ScheduleAsync(stranger, theirPatient, Utc(2026, 6, 14, 14, 0));
+
+        var herPatient = await CreatePatientAsync(michelle);
+        var herVisit = await ScheduleAsync(michelle, herPatient, Utc(2026, 6, 14, 16, 0));
+        await PlantForeignVisitAsync(herPatient, strangerPublicId, Utc(2026, 6, 14, 18, 0));
+
+        var day = await michelle.GetFromJsonAsync<DayScheduleDto>("/appointments/day/2026-06-14");
+
+        Assert.NotNull(day);
+        Assert.Equal(herVisit, Assert.Single(day.Visits).PublicId);
+    }
+
+    /// <summary>
+    /// Writes a clinical note owned by one provider onto another provider's visit.
+    ///
+    /// Deliberately raw SQL: the API cannot produce this row, and it is the only shape in
+    /// which the ClinicalNote tenancy filter is the thing standing between a foreign
+    /// clinical record and the schedule.
+    /// </summary>
+    private async Task PlantForeignNoteAsync(Guid visitPublicId, Guid ownerPublicId)
+    {
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        // IgnoreQueryFilters: a test scope has no request and therefore no provider
+        // context, so the tenancy filter correctly matches nothing.
+        var visit = await db.Appointments.IgnoreQueryFilters().AsNoTracking()
+            .Where(a => a.PublicId == visitPublicId)
+            .Select(a => new { a.Id, a.PatientId })
+            .SingleAsync();
+
+        var ownerId = await ProviderIdAsync(db, ownerPublicId);
+
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO dbo.ClinicalNotes
+                (PublicId, ProviderId, PatientId, AppointmentId, VersionNumber,
+                 IsCurrent, Status, Subjective, Objective, Assessment, [Plan],
+                 Origin, CreatedAtUtc)
+            VALUES
+                (NEWID(), {ownerId}, {visit.PatientId}, {visit.Id}, 1,
+                 1, 1, N'Not hers to read.', N'', N'', N'', 1, SYSUTCDATETIME())
+            """);
+    }
+
+    /// <summary>
+    /// Writes a visit owned by one provider against another provider's patient.
+    ///
+    /// Also unreachable through the API — scheduling resolves the patient through the
+    /// caller's own filter — and, like the planted note, the only shape that isolates one
+    /// filter from the one that would otherwise cover for it.
+    /// </summary>
+    private async Task PlantForeignVisitAsync(
+        Guid patientPublicId, Guid ownerPublicId, DateTime startUtc)
+    {
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var patientId = await db.Patients.IgnoreQueryFilters().AsNoTracking()
+            .Where(p => p.PublicId == patientPublicId)
+            .Select(p => p.Id)
+            .SingleAsync();
+
+        var ownerId = await ProviderIdAsync(db, ownerPublicId);
+
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO dbo.Appointments
+                (PublicId, ProviderId, PatientId, AppointmentType, StartUtc,
+                 DurationMinutes, [Status], CreatedAtUtc)
+            VALUES
+                (NEWID(), {ownerId}, {patientId}, 1, {startUtc}, 60, 1, SYSUTCDATETIME())
+            """);
+    }
+
+    private static Task<long> ProviderIdAsync(PracticeDbContext db, Guid providerPublicId) =>
+        db.Providers.AsNoTracking()
+            .Where(p => p.PublicId == providerPublicId)
+            .Select(p => p.Id)
+            .SingleAsync();
 
     private static async Task<Guid> ScheduleAsync(HttpClient client, Guid patient, DateTime startUtc)
     {

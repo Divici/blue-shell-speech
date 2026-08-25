@@ -134,6 +134,47 @@ public sealed class Appointment : Entity
         return thisStart < other.EndUtc && otherStart < EndUtc;
     }
 
+    /// <summary>
+    /// Why a clinical note cannot be started for this visit, or null if one can.
+    ///
+    /// A note documents what happened. A cancelled visit and a no-show did not happen, and
+    /// a visit that has not started has produced nothing to record — so none of the three
+    /// is a place a note belongs, and offering the entry point on them turns one mis-tap
+    /// into a draft on a child's chart.
+    ///
+    /// The wording is written for the clinician, because it is returned verbatim as the
+    /// 409 message and mirrored in web/lib/visit-documentation.ts. The same sentence
+    /// arrives whichever layer answers first.
+    /// </summary>
+    public string? DocumentationBlockedReason(DateTime nowUtc)
+    {
+        if (nowUtc.Kind != DateTimeKind.Utc)
+        {
+            throw new ArgumentException("The current time must be UTC.", nameof(nowUtc));
+        }
+
+        return Status switch
+        {
+            AppointmentStatus.Cancelled =>
+                "This visit was cancelled. There is nothing to document.",
+
+            AppointmentStatus.NoShow =>
+                "This visit was recorded as a no-show. There is nothing to document.",
+
+            // A visit marked complete happened, whatever the clock says. Without this, a
+            // session closed a couple of minutes early — or closed on a device running
+            // slow — would refuse its own note for the rest of the hour.
+            AppointmentStatus.Completed => null,
+
+            // Documentation opens when the session does, not when it ends: an in-home
+            // visit is typed up on a tablet while it is happening.
+            _ when StartUtc > nowUtc =>
+                "This visit has not started yet. Its note opens when the session does.",
+
+            _ => null,
+        };
+    }
+
     public void Reschedule(DateTime startUtc, short durationMinutes)
     {
         if (Status != AppointmentStatus.Scheduled)

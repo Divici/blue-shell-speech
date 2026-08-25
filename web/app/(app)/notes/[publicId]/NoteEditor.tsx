@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
-import { saveDraft, signNote, amendNote } from "./actions";
+import { saveDraft, signNote, amendNote, discardDraft } from "./actions";
 import { INITIAL_NOTE_STATE } from "./state";
 import type { ClinicalNote } from "@/lib/api/notes";
 
@@ -55,9 +55,22 @@ export function NoteEditor({ note }: { note: ClinicalNote }) {
   return note.status === "Draft" ? <DraftEditor note={note} /> : <SignedNote note={note} />;
 }
 
+/**
+ * Nothing written in any of the four sections.
+ *
+ * The same question ClinicalNote.CanBeDiscarded asks in the aggregate and
+ * TR_ClinicalNotes_PreventDeletingRealNotes asks in the database — whitespace included,
+ * because UpdateContent trims before storing. This layer only decides whether to offer
+ * the control; the two below decide whether the row goes.
+ */
+function isEmptyNote(note: ClinicalNote): boolean {
+  return SECTIONS.every((section) => !note[section.name].trim());
+}
+
 function DraftEditor({ note }: { note: ClinicalNote }) {
   const [saveState, saveAction] = useActionState(saveDraft, INITIAL_NOTE_STATE);
   const [signState, signAction] = useActionState(signNote, INITIAL_NOTE_STATE);
+  const [discardState, discardAction] = useActionState(discardDraft, INITIAL_NOTE_STATE);
 
   const state = signState.status === "idle" ? saveState : signState;
   const values = state.values ?? note;
@@ -127,6 +140,44 @@ function DraftEditor({ note }: { note: ClinicalNote }) {
           </p>
         </div>
       </form>
+
+      {/*
+        The way out of a mis-tap, offered only while there is nothing to lose.
+
+        A SEPARATE <form>, so discarding never carries the editor's textareas with it and
+        the two submit buttons above keep posting only what they mean to.
+
+        The consequence sits next to the control rather than behind a confirmation dialog,
+        the way closing a goal does (D063) — a dialog people click through is a decision
+        that was never made. It disappears the moment anything is saved into the note,
+        because from then on the API and the database both refuse the delete.
+      */}
+      {isEmptyNote(note) && (
+        <form action={discardAction} className="mt-6">
+          <input type="hidden" name="publicId" value={note.publicId} />
+
+          {discardState.status === "error" && (
+            <div
+              role="alert"
+              className="mb-4 rounded-xl border border-coral bg-coral/10 px-4 py-3 text-sm text-navy"
+            >
+              {discardState.message}
+            </div>
+          )}
+
+          <p className="text-sm text-ink-muted">
+            Nothing has been saved in this note yet. Discarding it removes it from the
+            visit, which then reads as undocumented again.
+          </p>
+
+          <button
+            type="submit"
+            className="mt-3 text-sm font-semibold text-blue-deep underline underline-offset-4 hover:text-navy"
+          >
+            Discard this empty note
+          </button>
+        </form>
+      )}
     </div>
   );
 }

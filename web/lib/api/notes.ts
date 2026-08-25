@@ -152,6 +152,19 @@ export const notesApi = {
     body: JSON.stringify(body),
   }),
 
+  /*
+   * The only delete in this client, and it is narrow by construction: the API refuses
+   * anything but an unsigned draft with nothing written in it, and so does a database
+   * trigger. Nothing here decides that — asking is all this does.
+   *
+   * TYPED, so a 404 is distinguishable from a success. `request` maps 404 to null, and a
+   * 204 would land in the same place — leaving a note that belongs to another provider
+   * indistinguishable from one genuinely removed, and the UI reporting a delete that
+   * never happened. The API answers with a body for exactly this reason.
+   */
+  discardDraft: (publicId: string) =>
+    request<{ publicId: string }>(`/notes/${publicId}`, { method: "DELETE" }),
+
   sign: (publicId: string) =>
     request<ClinicalNote>(`/notes/${publicId}/sign`, { method: "POST" }),
 

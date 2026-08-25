@@ -145,11 +145,21 @@ per-route means someone forgets. Asserted by a test hitting every authenticated 
 
 Append-only `AuditEvent`. Application principal has **no `UPDATE` or `DELETE`** grant on it.
 
-Recorded: `PatientViewed`, `NoteSigned`, `NoteAmended`, `AudioDeleted`, `LoginSucceeded`,
-`LoginFailed`, `MfaChallenged`, `ExportGenerated`.
+Recorded: `PatientViewed`, `NoteSigned`, `NoteAmended`, `NoteDiscarded`, `AudioDeleted`,
+`LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `ExportGenerated`.
 
 **Reads are audited, not just writes.** Under HIPAA, access to ePHI is an auditable event; most
 homegrown systems log only writes and discover the gap during an investigation.
+
+The read event has to be written on **the path the product actually uses**, not on the one that
+looks like the read endpoint. Opening a note goes through `GET /notes/{id}/history`, which
+returns full S/O/A/P for every version; that endpoint writes `PatientViewed` and records how many
+versions were disclosed. A sibling endpoint that audits correctly but is never called is a
+control on paper.
+
+`NoteDiscarded` covers the one delete this application performs: an unsigned draft with nothing
+written in any section (`ClinicalNote.CanBeDiscarded`). Anything else is refused by the API, by
+the aggregate, and by `TR_ClinicalNotes_PreventDeletingRealNotes`.
 
 `Metadata` never contains clinical content — the audit log is the table most likely to be
 exported or read by a third party, which multiplies the blast radius of anything in it.

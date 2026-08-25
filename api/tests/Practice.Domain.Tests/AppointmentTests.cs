@@ -257,4 +257,104 @@ public sealed class AppointmentTests
 
         Assert.Equal("Family unwell", appointment.CancellationReason);
     }
+
+    // ------------------------------------------------- documenting a visit
+
+    /*
+     * A note documents what happened.
+     *
+     * A cancelled visit and a no-show did not happen; a visit that has not started has
+     * produced nothing to record. Offering the note entry point on any of the three turns
+     * one mis-tap into a draft on a child's chart that cannot be signed and, before the
+     * discard path existed, could not be removed either.
+     */
+
+    [Fact]
+    public void A_cancelled_visit_cannot_be_documented()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+        appointment.Cancel("Family unwell");
+
+        var reason = appointment.DocumentationBlockedReason(Utc(2026, 9, 1, 16, 0));
+
+        Assert.NotNull(reason);
+        Assert.Contains("cancelled", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_no_show_cannot_be_documented()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+        appointment.MarkNoShow();
+
+        var reason = appointment.DocumentationBlockedReason(Utc(2026, 9, 1, 16, 0));
+
+        Assert.NotNull(reason);
+        Assert.Contains("no-show", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_visit_that_has_not_started_cannot_be_documented()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+
+        var reason = appointment.DocumentationBlockedReason(Utc(2026, 9, 1, 13, 59));
+
+        Assert.NotNull(reason);
+        Assert.Contains("not started", reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Documentation opens when the session does, not when it ends — an in-home visit is
+    /// typed up on a tablet while it is happening, not afterwards in a car.
+    /// </summary>
+    [Fact]
+    public void A_visit_in_progress_can_be_documented()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+
+        Assert.Null(appointment.DocumentationBlockedReason(Utc(2026, 9, 1, 14, 0)));
+        Assert.Null(appointment.DocumentationBlockedReason(Utc(2026, 9, 1, 14, 30)));
+    }
+
+    /// <summary>
+    /// A visit left as Scheduled because nobody pressed "complete" is still a visit that
+    /// happened. Notes must not depend on a status transition the clinician may never make.
+    /// </summary>
+    [Fact]
+    public void A_past_visit_still_marked_scheduled_can_be_documented()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+
+        Assert.Null(appointment.DocumentationBlockedReason(Utc(2026, 9, 8, 9, 0)));
+    }
+
+    /// <summary>
+    /// A visit marked complete happened, whatever the clock says.
+    ///
+    /// Without this, a session closed a couple of minutes early — or closed on a device
+    /// whose clock runs slow — would refuse its own note for the rest of the hour.
+    /// </summary>
+    [Fact]
+    public void A_completed_visit_can_be_documented_even_before_its_start_time()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+        appointment.Complete();
+
+        Assert.Null(appointment.DocumentationBlockedReason(Utc(2026, 9, 1, 13, 55)));
+    }
+
+    /// <summary>
+    /// The same rule as every other time argument in this aggregate: a Kind of Unspecified
+    /// means someone lost an offset, and comparing against it would answer confidently and
+    /// wrongly.
+    /// </summary>
+    [Fact]
+    public void Documentation_requires_a_utc_clock_reading()
+    {
+        var appointment = Schedule(start: Utc(2026, 9, 1, 14, 0));
+
+        Assert.Throws<ArgumentException>(() =>
+            appointment.DocumentationBlockedReason(new DateTime(2026, 9, 1, 16, 0, 0)));
+    }
 }
