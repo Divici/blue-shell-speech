@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState, useTransition } from "react";
+import { Spinner } from "@/components/loading/Spinner";
 
 interface PatientSearchProps {
   defaultValue: string;
@@ -71,8 +72,9 @@ export function PatientSearch({ defaultValue, includeDischarged }: PatientSearch
       <button
         type="submit"
         disabled={isPending}
-        className="rounded-full border border-ice px-5 py-2.5 text-sm font-semibold text-blue-deep disabled:opacity-60"
+        className="inline-flex items-center gap-2 rounded-full border border-ice px-5 py-2.5 text-sm font-semibold text-blue-deep disabled:opacity-60"
       >
+        {isPending && <Spinner size={14} />}
         {isPending ? "Searching…" : "Search"}
       </button>
     </form>

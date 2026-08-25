@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useActionState } from "react";
 import type { EnquiryDetail } from "@/lib/api/enquiries";
+import { Spinner } from "@/components/loading/Spinner";
 import { formatAgeMonths } from "@/lib/age";
 import { convertToPatient, declineEnquiry, markContacted } from "./actions";
 import {
@@ -107,8 +108,9 @@ export function EnquiryActions({ enquiry }: { enquiry: EnquiryDetail }) {
             <button
               type="submit"
               disabled={busy}
-              className="rounded-full bg-teal px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+              className="inline-flex items-center gap-2 rounded-full bg-teal px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
             >
+              {contacting && <Spinner size={14} />}
               {contacting ? "Saving…" : "Mark contacted"}
             </button>
           </form>
@@ -119,8 +121,9 @@ export function EnquiryActions({ enquiry }: { enquiry: EnquiryDetail }) {
           <button
             type="submit"
             disabled={busy}
-            className="rounded-full border border-ice bg-white px-5 py-2.5 text-sm font-semibold text-ink-muted transition-colors hover:border-blue hover:text-blue-deep disabled:opacity-70"
+            className="inline-flex items-center gap-2 rounded-full border border-ice bg-white px-5 py-2.5 text-sm font-semibold text-ink-muted transition-colors hover:border-blue hover:text-blue-deep disabled:opacity-70"
           >
+            {declining && <Spinner size={14} />}
             {declining ? "Saving…" : "Decline"}
           </button>
         </form>
@@ -145,7 +148,13 @@ export function EnquiryActions({ enquiry }: { enquiry: EnquiryDetail }) {
         </p>
       )}
 
-      <ConvertForm enquiry={enquiry} action={convertAction} state={convertState} busy={busy} />
+      <ConvertForm
+        enquiry={enquiry}
+        action={convertAction}
+        state={convertState}
+        busy={busy}
+        converting={converting}
+      />
     </section>
   );
 }
@@ -168,11 +177,15 @@ function ConvertForm({
   action,
   state,
   busy,
+  converting,
 }: {
   enquiry: EnquiryDetail;
   action: (formData: FormData) => void;
   state: ConvertState;
+  /** Anything on the panel is in flight — no move may start on top of another. */
   busy: boolean;
+  /** THIS move is in flight, which is what the label is allowed to say. */
+  converting: boolean;
 }) {
   return (
     <form action={action} className="mt-6 border-t border-ice pt-6">
@@ -201,12 +214,19 @@ function ConvertForm({
         />
       </div>
 
+      {/*
+        THE SLOWEST MOVE ON THIS PANEL and the one that was silent while it ran: it was
+        disabled during the write but never relabelled, so the card dimmed and said
+        nothing. Creating a patient record from an enquiry writes a chart — the answer to
+        "did my tap register" cannot be left to the opacity of a button.
+      */}
       <button
         type="submit"
         disabled={busy}
-        className="mt-5 rounded-full bg-blue-action px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+        className="mt-5 inline-flex items-center gap-2 rounded-full bg-blue-action px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
       >
-        Create patient record
+        {converting && <Spinner size={14} />}
+        {converting ? "Creating record…" : "Create patient record"}
       </button>
     </form>
   );

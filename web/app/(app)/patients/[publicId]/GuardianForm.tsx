@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
+import { Spinner } from "@/components/loading/Spinner";
 import { addGuardian, updateGuardian } from "./actions";
 import { EMPTY_GUARDIAN_VALUES, INITIAL_GUARDIAN_STATE, type GuardianFormState } from "./state";
 import type { GuardianInput } from "@/lib/guardian-schema";
@@ -17,8 +18,9 @@ function SubmitButton({ editing }: { editing: boolean }) {
     <button
       type="submit"
       disabled={pending}
-      className="rounded-full bg-blue-action px-6 py-3 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+      className="inline-flex items-center gap-2.5 rounded-full bg-blue-action px-6 py-3 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
     >
+      {pending && <Spinner size={16} />}
       {pending
         ? editing
           ? "Saving…"

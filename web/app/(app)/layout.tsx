@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ShellMark } from "@/components/brand/ShellMark";
 import { getSession } from "@/lib/auth/session";
-import { signOut } from "../login/actions";
+import { SignOutButton } from "./SignOutButton";
 
 /**
  * The authenticated shell.
@@ -58,14 +58,11 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             <span className="hidden text-sm text-ink-muted sm:inline">
               {session.displayName}
             </span>
-            <form action={signOut}>
-              <button
-                type="submit"
-                className="rounded-full border border-ice px-4 py-2 text-sm font-medium text-ink-muted hover:border-blue hover:text-blue-deep"
-              >
-                Sign out
-              </button>
-            </form>
+            {/*
+              A Client Component for the pending state alone. Everything else in this
+              header stays on the server, including the clinician name beside it.
+            */}
+            <SignOutButton />
           </div>
         </div>
       </header>

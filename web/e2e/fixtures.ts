@@ -1,4 +1,5 @@
 import { test as base, expect } from "@playwright/test";
+import { SESSION_COOKIE, mintSessionCookie, sessionSecret } from "./session";
 
 /**
  * Every test is a different visitor.
@@ -37,6 +38,37 @@ function syntheticClientAddress(): string {
 export const test = base.extend({
   page: async ({ page }, use) => {
     await page.setExtraHTTPHeaders({ "x-forwarded-for": syntheticClientAddress() });
+    await use(page);
+  },
+});
+
+/**
+ * The same visitor, holding a provider session.
+ *
+ * A SEPARATE FIXTURE RATHER THAN AN OPTION ON THE FIRST ONE, so that a test which forgets
+ * to ask for it cannot accidentally be authenticated. `auth.spec.ts` asserts what an
+ * anonymous visitor can reach, and those assertions are worthless if a session can leak
+ * into them — the cookie is added to this context and to nothing else.
+ *
+ * The cookie is minted rather than earned; `e2e/session.ts` explains why, and what the
+ * failure looks like if the key is wrong (a redirect to `/login`, immediately).
+ */
+export const signedInTest = test.extend({
+  page: async ({ page }, use) => {
+    await page.context().addCookies([
+      {
+        name: SESSION_COOKIE,
+        value: await mintSessionCookie(sessionSecret()),
+        domain: "localhost",
+        path: "/",
+        httpOnly: true,
+        // http://localhost — a Secure cookie would simply not be sent, and the test would
+        // fail as an unexplained redirect rather than as a wrong assertion.
+        secure: false,
+        sameSite: "Lax",
+      },
+    ]);
+
     await use(page);
   },
 });

@@ -1,6 +1,19 @@
 import { defineConfig, devices } from "@playwright/test";
+import { sessionSecret } from "./e2e/session";
 
 const PORT = 3000;
+
+/*
+ * One session key for the whole run, resolved before anything starts.
+ *
+ * Written back into `process.env` deliberately: Playwright loads this config in the main
+ * process AND in every worker, and workers inherit the environment they are spawned with —
+ * so assigning here makes the `??` below a no-op in the workers and every one of them
+ * agrees with the server. Without it each worker would generate its own key and mint
+ * cookies the server cannot read.
+ */
+process.env.SESSION_SECRET ??= sessionSecret();
+const SESSION_SECRET = process.env.SESSION_SECRET;
 
 // Kept in step with the default in `e2e/api-stub.mjs` and `e2e/consultation-api.ts`.
 const API_STUB_PORT = Number(process.env.API_STUB_PORT ?? 3001);
@@ -67,7 +80,22 @@ export default defineConfig({
       url: `http://localhost:${PORT}`,
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,
-      env: { API_BASE_URL: `http://127.0.0.1:${API_STUB_PORT}` },
+      env: {
+        API_BASE_URL: `http://127.0.0.1:${API_STUB_PORT}`,
+        /*
+         * The server and the tests encrypt session cookies with the SAME key.
+         *
+         * `e2e/session.ts` mints a provider session so the authenticated screens are
+         * reachable without an Identity store, and a JWE the server cannot decrypt is a
+         * redirect to `/login` rather than an error — which would fail the tests as an
+         * unexplained wrong screen. Resolved once, above, and pushed into `process.env` so
+         * that Playwright's worker processes inherit the same value they pass to the
+         * server here. Next does not overwrite an environment variable that is already
+         * set, so this wins over `.env.local` — and where `.env.local` was the source, the
+         * two are the same string anyway.
+         */
+        SESSION_SECRET,
+      },
     },
   ],
 });

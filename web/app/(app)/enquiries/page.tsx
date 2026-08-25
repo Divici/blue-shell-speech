@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { enquiriesApi } from "@/lib/api/enquiries";
+import { PendingLink } from "@/components/loading/PendingLink";
 import { EnquiryList } from "./EnquiryList";
 
 export const metadata: Metadata = {
@@ -63,13 +63,19 @@ export default async function EnquiriesPage(props: PageProps<"/enquiries">) {
         Links rather than a client-side control: each filter is a URL, so a phone's back
         button works, a filtered inbox can be bookmarked, and the page needs no JavaScript
         to change what it shows.
+
+        THE SELECTED TAB IS DERIVED FROM THE SEARCH PARAMETER THIS RENDER IS WAITING ON, so
+        for the length of a cold start the previously selected tab is still the highlighted
+        one — the clinician has tapped and the strip looks untouched. PendingLink marks the
+        one she pressed, without turning any of these into a button and losing the three
+        properties above.
       */}
       <nav aria-label="Filter enquiries" className="mt-6 flex flex-wrap gap-2">
         {STATUS_FILTERS.map((option) => {
           const selected = option.value === filter;
 
           return (
-            <Link
+            <PendingLink
               key={option.value}
               href={option.value === "all" ? "/enquiries" : `/enquiries?status=${option.value}`}
               aria-current={selected ? "page" : undefined}
@@ -80,7 +86,7 @@ export default async function EnquiriesPage(props: PageProps<"/enquiries">) {
               }
             >
               {option.label}
-            </Link>
+            </PendingLink>
           );
         })}
       </nav>

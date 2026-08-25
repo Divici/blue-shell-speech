@@ -32,8 +32,30 @@ import { randomUUID } from "node:crypto";
 // Kept in step with the default in `e2e/consultation-api.ts`.
 const PORT = Number(process.env.API_STUB_PORT ?? 3001);
 
-/** A submission naming this child is answered 503, as an unreachable practice would be. */
-const UNSTORABLE_CHILD = "Unstorable";
+/*
+ * The triggers live in api-stub-contract.mjs, which the specs import too.
+ *
+ * THIS FILE LISTENS ON IMPORT, so a spec that reached in here for a constant would start a
+ * second stub inside a Playwright worker — measured: the whole run dies with
+ * `EADDRINUSE: 127.0.0.1:3001` before any test executes. Constants with no side effect
+ * next to them is the fix; a copy in the spec is not, because a duplicated trigger stops
+ * triggering the day one of the two changes and the test then passes against a fast path.
+ *
+ * WHAT A DELAY IS FOR, AND WHY IT IS NOT A LIE ABOUT THE API. Nothing here decides anything
+ * the API decides. It reproduces the one property this deployment has and a developer's
+ * laptop does not: this tier scales to zero and its database auto-pauses, so a first
+ * request is measured in tens of seconds. Every screen in this product was built against a
+ * local database answering in single-digit milliseconds, which is exactly why nothing
+ * pended in development and the gap went unseen.
+ */
+import {
+  SLOW_DAY,
+  SLOW_LOGIN_EMAIL,
+  SLOW_MS,
+  UNSTORABLE_CHILD,
+} from "./api-stub-contract.mjs";
+
+const held = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** childFirstName → number of submissions seen. */
 const received = new Map();
@@ -69,6 +91,35 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && url.pathname === "/_received") {
     const child = url.searchParams.get("child") ?? "";
     return json(response, 200, { count: received.get(child) ?? 0 });
+  }
+
+  /*
+   * A day's schedule, always empty.
+   *
+   * The list itself is asserted against real SQL Server in `Practice.Api.Tests`; what this
+   * answers is whether the browser sees a fallback while it waits. An empty day keeps
+   * every child out of this file — there is no synthetic caseload here to drift out of
+   * step with the seeder's.
+   */
+  if (request.method === "GET" && url.pathname.startsWith("/appointments/day/")) {
+    const date = url.pathname.slice("/appointments/day/".length);
+    if (date === SLOW_DAY) await held(SLOW_MS);
+
+    return json(response, 200, { date, visits: [], totalMileage: 0 });
+  }
+
+  /*
+   * Step one of sign-in, refused.
+   *
+   * ALWAYS "invalid", never a success: a stubbed success would hand out a session this
+   * process has no business issuing, and the reported bug is about what the FORM does
+   * while it waits, not about what a correct password leads to.
+   */
+  if (request.method === "POST" && url.pathname === "/auth/password") {
+    const body = await readJson(request);
+    if ((body?.email ?? "") === SLOW_LOGIN_EMAIL) await held(SLOW_MS);
+
+    return json(response, 200, { status: "invalid", userId: null, lockoutSeconds: null });
   }
 
   if (request.method === "POST" && url.pathname === "/consultation-requests") {

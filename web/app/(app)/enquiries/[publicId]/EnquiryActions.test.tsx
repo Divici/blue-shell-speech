@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 /**
  * What an enquiry offers to do next.
@@ -21,6 +22,8 @@ vi.mock("./actions", () => ({
 }));
 
 import { EnquiryActions } from "./EnquiryActions";
+import { markContacted, declineEnquiry, convertToPatient } from "./actions";
+import { INITIAL_CONVERT_STATE } from "./state";
 import type { EnquiryDetail } from "@/lib/api/enquiries";
 
 const BASE: EnquiryDetail = {
@@ -171,5 +174,119 @@ describe("EnquiryActions", () => {
     for (const input of ids) {
       expect(input.getAttribute("value")).toBe(BASE.publicId);
     }
+  });
+});
+
+/**
+ * What the panel does while a transition is being written.
+ *
+ * EVERY MOVE ON THIS SCREEN IS ONE-WAY. Declining cannot be reopened, converting creates a
+ * patient record, and marking contacted is the transition the aggregate treats as
+ * idempotent only because it already happened. A second POST is not a duplicate button
+ * press to shrug at: `convertToPatient` twice is two attempts to create a child's chart
+ * from one enquiry.
+ *
+ * The three buttons were already disabled together while any of them was in flight. The
+ * conversion button was the exception in the other direction — disabled, but never
+ * relabelled, so on the slowest action of the four the screen dimmed and said nothing.
+ */
+describe("EnquiryActions while a transition is in flight", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Held until released; an unresolved action leaks into the next test (NoteEditor). */
+  function holdable() {
+    let release: () => void = () => {};
+    let first = true;
+
+    const impl = () => {
+      if (!first) return Promise.resolve(INITIAL_CONVERT_STATE);
+      first = false;
+      return new Promise<typeof INITIAL_CONVERT_STATE>((resolve) => {
+        release = () => resolve(INITIAL_CONVERT_STATE);
+      });
+    };
+
+    return { impl, release: () => release() };
+  }
+
+  async function settle(held: { release: () => void }, label: RegExp) {
+    held.release();
+    await waitFor(() => expect(screen.getByRole("button", { name: label })).toBeEnabled());
+  }
+
+  /**
+   * Control: the `converting ? "Creating record…" : "Create patient record"` expression on
+   * the conversion button.
+   * Reduced to the plain label → red, "Unable to find an accessible element with the role
+   * \"button\" and name `/creating record/i`", plus the two siblings below, which wait on
+   * the label coming back.
+   */
+  it("says that it is creating the record rather than only greying out", async () => {
+    const user = userEvent.setup();
+    const held = holdable();
+    vi.mocked(convertToPatient).mockImplementation(held.impl);
+
+    renderActions();
+    await user.type(screen.getByLabelText(/last name/i), "Sinclair");
+    await user.type(screen.getByLabelText(/date of birth/i), "2024-02-14");
+    await user.click(screen.getByRole("button", { name: /^create patient record$/i }));
+
+    expect(screen.getByRole("button", { name: /creating record/i })).toBeDisabled();
+    await settle(held, /^create patient record$/i);
+  });
+
+  /**
+   * A second conversion is a second attempt to create a chart for the same child.
+   *
+   * Control: the `disabled={busy}` attribute on the conversion button.
+   * Deleted → red in `settle`, "Unable to find role=\"button\" and name `/^create patient
+   * record$/i`": the queued second submission re-enters the pending state the instant the
+   * first resolves, so the label never comes back. Two more tests in this block go with
+   * it, because the attribute is the same one they lean on.
+   */
+  it("cannot be made to convert the same enquiry twice", async () => {
+    const user = userEvent.setup();
+    const held = holdable();
+    vi.mocked(convertToPatient).mockImplementation(held.impl);
+
+    renderActions();
+    await user.type(screen.getByLabelText(/last name/i), "Sinclair");
+    await user.type(screen.getByLabelText(/date of birth/i), "2024-02-14");
+
+    const create = screen.getByRole("button", { name: /^create patient record$/i });
+    await user.click(create);
+    await user.click(create);
+
+    await settle(held, /^create patient record$/i);
+
+    expect(vi.mocked(convertToPatient)).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * THE FOUR CONTROLS ARE ONE DECISION, not four independent ones.
+   *
+   * Declining an enquiry that is halfway through becoming a patient is the interleaving
+   * this panel must not permit: the aggregate would refuse the second transition, but only
+   * after the clinician had asked for both.
+   *
+   * Control: the `busy` flag — `contacting || declining || converting` — on the decline
+   * button.
+   * Replaced with `declining` alone → red in `settle`, "Unable to find role=\"button\" and
+   * name `/^mark contacted$/i`": the decline the panel should have refused went through,
+   * and the enquiry is now mid-decline while the reply it was asked for is still in
+   * flight.
+   */
+  it("locks the other moves while one is being written", async () => {
+    const user = userEvent.setup();
+    const held = holdable();
+    vi.mocked(markContacted).mockImplementation(held.impl);
+
+    renderActions();
+    await user.click(screen.getByRole("button", { name: /^mark contacted$/i }));
+    await user.click(screen.getByRole("button", { name: /^decline$/i }));
+
+    await settle(held, /^mark contacted$/i);
+
+    expect(vi.mocked(declineEnquiry)).not.toHaveBeenCalled();
   });
 });

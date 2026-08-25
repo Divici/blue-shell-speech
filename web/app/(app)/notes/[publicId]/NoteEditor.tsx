@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { useFormStatus } from "react-dom";
+import { Spinner } from "@/components/loading/Spinner";
 import { saveDraft, signNote, amendNote, discardDraft } from "./actions";
 import { INITIAL_NOTE_STATE } from "./state";
 import type { ClinicalNote } from "@/lib/api/notes";
@@ -26,16 +26,38 @@ const SECTIONS = [
   { name: "plan", label: "Plan", hint: "What happens next session." },
 ] as const;
 
+/**
+ * A submit button that says what it is doing, and refuses to be pressed twice.
+ *
+ * PENDING IS PASSED IN RATHER THAN READ FROM `useFormStatus`, which is what this used to
+ * do and is wrong for this screen specifically. `useFormStatus` reports the FORM, and the
+ * editor is one form with two actions — save and sign — so a signature in flight relabelled
+ * the save button "Saving…" as well. On the one screen in this product where the wrong
+ * operation is irreversible, naming the wrong operation is worse than naming none.
+ * `useActionState` returns a flag per action; those are what arrive here.
+ *
+ * `busy` and `pending` are separate on purpose. `pending` is "this control's own action is
+ * running", and decides the label. `busy` is "something on this form is running", and
+ * decides the disabled attribute — so a save cannot start underneath a signature, and a
+ * second tap on a slow connection cannot reach the API at all. React serialises
+ * `useActionState` submissions, which DEFERS a second one rather than dropping it; the
+ * disabled attribute is what actually drops it.
+ */
 function ActionButton({
   label,
   pendingLabel,
+  pending,
+  busy,
   variant = "primary",
+  formAction,
 }: {
   label: string;
   pendingLabel: string;
+  pending: boolean;
+  busy: boolean;
   variant?: "primary" | "secondary";
+  formAction?: (formData: FormData) => void;
 }) {
-  const { pending } = useFormStatus();
   const styles =
     variant === "primary"
       ? "bg-blue-action text-white hover:opacity-90"
@@ -44,9 +66,11 @@ function ActionButton({
   return (
     <button
       type="submit"
-      disabled={pending}
-      className={`rounded-full px-6 py-3 font-semibold transition-opacity disabled:opacity-70 ${styles}`}
+      disabled={busy}
+      {...(formAction ? { formAction } : {})}
+      className={`inline-flex items-center gap-2.5 rounded-full px-6 py-3 font-semibold transition-opacity disabled:opacity-70 ${styles}`}
     >
+      {pending && <Spinner />}
       {pending ? pendingLabel : label}
     </button>
   );
@@ -76,9 +100,23 @@ function isEmptyNote(note: ClinicalNote): boolean {
 }
 
 function DraftEditor({ note }: { note: ClinicalNote }) {
-  const [saveState, saveAction] = useActionState(saveDraft, INITIAL_NOTE_STATE);
-  const [signState, signAction] = useActionState(signNote, INITIAL_NOTE_STATE);
-  const [discardState, discardAction] = useActionState(discardDraft, INITIAL_NOTE_STATE);
+  const [saveState, saveAction, saving] = useActionState(saveDraft, INITIAL_NOTE_STATE);
+  const [signState, signAction, signing] = useActionState(signNote, INITIAL_NOTE_STATE);
+  const [discardState, discardAction, discarding] = useActionState(
+    discardDraft,
+    INITIAL_NOTE_STATE,
+  );
+
+  /*
+   * Anything in flight locks everything on this screen.
+   *
+   * The three actions are not independent: save posts the textareas, sign attests to
+   * them, discard deletes the row they belong to. Letting a second one start while a
+   * first is unresolved means attesting to a version the API has not stored, or deleting
+   * a note a save is in the middle of filling in — the interleaving F1 of task 1.14
+   * found on the server side, reachable from the browser.
+   */
+  const busy = saving || signing || discarding;
 
   const state = signState.status === "idle" ? saveState : signState;
   const values = state.values ?? note;
@@ -135,14 +173,26 @@ function DraftEditor({ note }: { note: ClinicalNote }) {
         </div>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
-          <ActionButton label="Save draft" pendingLabel="Saving…" variant="secondary" />
-          <button
-            type="submit"
+          <ActionButton
+            label="Save draft"
+            pendingLabel="Saving…"
+            pending={saving}
+            busy={busy}
+            variant="secondary"
+          />
+          {/*
+            SIGNING IS THE IRREVERSIBLE ONE and it was the control with no feedback at all
+            — a bare <button> beside a save button that had a pending label and a disabled
+            attribute. On a container that scales to zero this takes tens of seconds, and
+            the only thing the screen offered in reply to a tap was the tap.
+          */}
+          <ActionButton
+            label="Sign note"
+            pendingLabel="Signing…"
+            pending={signing}
+            busy={busy}
             formAction={signAction}
-            className="rounded-full bg-blue-action px-6 py-3 font-semibold text-white transition-opacity hover:opacity-90"
-          >
-            Sign note
-          </button>
+          />
           <p className="text-sm text-ink-muted">
             Signing is final. Corrections afterwards create a new version.
           </p>
@@ -178,11 +228,17 @@ function DraftEditor({ note }: { note: ClinicalNote }) {
             visit, which then reads as undocumented again.
           </p>
 
+          {/*
+            The other irreversible one, and the other control that had nothing to say. The
+            row goes for good; there is no undo and no endpoint that could provide one.
+          */}
           <button
             type="submit"
-            className="mt-3 text-sm font-semibold text-blue-deep underline underline-offset-4 hover:text-navy"
+            disabled={busy}
+            className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-blue-deep underline underline-offset-4 hover:text-navy disabled:no-underline disabled:opacity-70"
           >
-            Discard this empty note
+            {discarding && <Spinner size={14} />}
+            {discarding ? "Discarding…" : "Discard this empty note"}
           </button>
         </form>
       )}
@@ -191,7 +247,7 @@ function DraftEditor({ note }: { note: ClinicalNote }) {
 }
 
 function SignedNote({ note }: { note: ClinicalNote }) {
-  const [amendState, amendAction] = useActionState(amendNote, INITIAL_NOTE_STATE);
+  const [amendState, amendAction, starting] = useActionState(amendNote, INITIAL_NOTE_STATE);
   const [amending, setAmending] = useState(false);
 
   return (
@@ -255,11 +311,22 @@ function SignedNote({ note }: { note: ClinicalNote }) {
             </p>
 
             <div className="mt-5 flex items-center gap-4">
-              <ActionButton label="Start amendment" pendingLabel="Starting…" />
+              <ActionButton
+                label="Start amendment"
+                pendingLabel="Starting…"
+                pending={starting}
+                busy={starting}
+              />
+              {/*
+                Cancel goes too. Withdrawing the form under an amendment that is already
+                being created would leave the clinician looking at a signed note while a
+                version 2 lands behind it.
+              */}
               <button
                 type="button"
+                disabled={starting}
                 onClick={() => setAmending(false)}
-                className="text-sm font-medium text-ink-muted hover:text-blue-deep"
+                className="text-sm font-medium text-ink-muted hover:text-blue-deep disabled:opacity-70"
               >
                 Cancel
               </button>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { Spinner } from "@/components/loading/Spinner";
 import { markGoalMet, discontinueGoal } from "./actions";
 import { INITIAL_GOAL_TRANSITION_STATE } from "./state";
 
@@ -61,8 +62,9 @@ export function CloseGoalActions({
             type="submit"
             disabled={markingMet || discontinuing}
             aria-label={`Mark met: ${goalSummary}`}
-            className="rounded-full bg-teal px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+            className="inline-flex items-center gap-2 rounded-full bg-teal px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
           >
+            {markingMet && <Spinner size={14} />}
             {markingMet ? "Marking…" : "Mark met"}
           </button>
         </form>
@@ -73,8 +75,9 @@ export function CloseGoalActions({
             type="submit"
             disabled={markingMet || discontinuing}
             aria-label={`Discontinue: ${goalSummary}`}
-            className="rounded-full border border-ice bg-white px-5 py-2.5 text-sm font-semibold text-ink-muted transition-colors hover:border-blue hover:text-blue-deep disabled:opacity-70"
+            className="inline-flex items-center gap-2 rounded-full border border-ice bg-white px-5 py-2.5 text-sm font-semibold text-ink-muted transition-colors hover:border-blue hover:text-blue-deep disabled:opacity-70"
           >
+            {discontinuing && <Spinner size={14} />}
             {discontinuing ? "Stopping…" : "Discontinue"}
           </button>
         </form>

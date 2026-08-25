@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { scheduleApi, practiceToday, shiftDate } from "@/lib/api/schedule";
+import { PendingLink } from "@/components/loading/PendingLink";
 import { VisitCard } from "./VisitCard";
 
 export const metadata: Metadata = {
@@ -47,27 +48,36 @@ export default async function TodayPage(props: PageProps<"/today">) {
           Schedule a visit
         </Link>
 
+        {/*
+          Links, so a day is a URL — bookmarkable, back-button friendly, and working
+          without JavaScript, like the enquiry tabs.
+
+          THEY READ AS IN-PAGE CONTROLS AND ARE NOT, which is exactly the case that feels
+          dead on a container that has scaled to zero: the arrow is tapped, the heading
+          still says today, and nothing about the arrow acknowledges the tap. The hint
+          inside each one does, while the segment's skeleton replaces the list below.
+        */}
         <nav aria-label="Change day" className="ml-auto flex items-center gap-2">
-          <Link
+          <PendingLink
             href={`/today?date=${shiftDate(date, -1)}`}
             className="rounded-full border border-ice bg-white px-4 py-2 text-sm font-medium text-ink-muted hover:border-blue"
           >
             <span aria-hidden="true">←</span>
             <span className="sr-only">Previous day</span>
-          </Link>
-          <Link
+          </PendingLink>
+          <PendingLink
             href="/today"
             className="rounded-full border border-ice bg-white px-4 py-2 text-sm font-medium text-blue-deep hover:border-blue"
           >
             Today
-          </Link>
-          <Link
+          </PendingLink>
+          <PendingLink
             href={`/today?date=${shiftDate(date, 1)}`}
             className="rounded-full border border-ice bg-white px-4 py-2 text-sm font-medium text-ink-muted hover:border-blue"
           >
             <span aria-hidden="true">→</span>
             <span className="sr-only">Next day</span>
-          </Link>
+          </PendingLink>
         </nav>
       </div>
 

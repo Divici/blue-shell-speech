@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { useFormStatus } from "react-dom";
+import { Spinner } from "@/components/loading/Spinner";
 import { verifyMfa } from "../actions";
 import { INITIAL_MFA_STATE } from "../state";
 
@@ -11,8 +12,9 @@ function SubmitButton({ label }: { label: string }) {
     <button
       type="submit"
       disabled={pending}
-      className="w-full rounded-full bg-blue-action px-6 py-3.5 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+      className="inline-flex w-full items-center justify-center gap-2.5 rounded-full bg-blue-action px-6 py-3.5 font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
     >
+      {pending && <Spinner size={18} />}
       {pending ? "Verifying…" : label}
     </button>
   );

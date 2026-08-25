@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { Spinner } from "@/components/loading/Spinner";
 import { startNote } from "./actions";
 import { INITIAL_START_NOTE_STATE } from "./state";
 
@@ -44,8 +45,9 @@ export function StartNoteButton({
         aria-label={
           pending ? `Starting note for ${patientName}` : `Start note for ${patientName}`
         }
-        className="rounded-full bg-blue-action px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
+        className="inline-flex items-center gap-2 rounded-full bg-blue-action px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-70"
       >
+        {pending && <Spinner size={14} />}
         {pending ? "Starting…" : "Start note"}
       </button>
 
