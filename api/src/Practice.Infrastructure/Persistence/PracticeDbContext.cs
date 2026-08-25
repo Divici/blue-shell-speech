@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Practice.Application.Providers;
 using Practice.Domain.Auditing;
+using Practice.Domain.ClinicalNotes;
+using Practice.Domain.Goals;
 using Practice.Domain.Patients;
 using Practice.Domain.Scheduling;
 using Practice.Domain.Providers;
@@ -32,6 +34,10 @@ public sealed class PracticeDbContext(
 
     public DbSet<Appointment> Appointments => Set<Appointment>();
 
+    public DbSet<Goal> Goals => Set<Goal>();
+
+    public DbSet<ClinicalNote> ClinicalNotes => Set<ClinicalNote>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -60,6 +66,10 @@ public sealed class PracticeDbContext(
             a => providerContext.ProviderId != null && a.ProviderId == providerContext.ProviderId);
         builder.Entity<Appointment>().HasQueryFilter(
             a => providerContext.ProviderId != null && a.ProviderId == providerContext.ProviderId);
+        builder.Entity<Goal>().HasQueryFilter(
+            g => providerContext.ProviderId != null && g.ProviderId == providerContext.ProviderId);
+        builder.Entity<ClinicalNote>().HasQueryFilter(
+            n => providerContext.ProviderId != null && n.ProviderId == providerContext.ProviderId);
 
         /*
          * Every DateTime is UTC, enforced at the mapping layer.

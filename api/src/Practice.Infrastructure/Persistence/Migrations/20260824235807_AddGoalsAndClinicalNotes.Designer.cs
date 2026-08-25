@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Practice.Infrastructure.Persistence;
 
@@ -11,9 +12,11 @@ using Practice.Infrastructure.Persistence;
 namespace Practice.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(PracticeDbContext))]
-    partial class PracticeDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260824235807_AddGoalsAndClinicalNotes")]
+    partial class AddGoalsAndClinicalNotes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -317,14 +320,10 @@ namespace Practice.Infrastructure.Persistence.Migrations
 
                     b.ToTable("ClinicalNotes", null, t =>
                         {
-                            t.HasTrigger("TR_ClinicalNotes_PreventSignedEdits");
-
                             t.HasCheckConstraint("CK_ClinicalNotes_AmendmentsHaveAReason", "([SupersedesNoteId] IS NULL) OR ([AmendmentReason] IS NOT NULL)");
 
                             t.HasCheckConstraint("CK_ClinicalNotes_SignedNotesAreAttested", "([Status] = 1) OR ([SignedAtUtc] IS NOT NULL AND [SignedBy] IS NOT NULL AND [ContentHash] IS NOT NULL)");
                         });
-
-                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("Practice.Domain.Goals.Goal", b =>

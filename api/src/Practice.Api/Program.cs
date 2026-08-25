@@ -1,4 +1,5 @@
 using Practice.Api.Auth;
+using Practice.Api.ClinicalNotes;
 using Practice.Api.Patients;
 using Practice.Api.Scheduling;
 using Practice.Api.Startup;
@@ -77,6 +78,7 @@ app.UseMiddleware<ProviderContextMiddleware>();
 app.MapAuthEndpoints();
 app.MapPatientEndpoints();
 app.MapAppointmentEndpoints();
+app.MapNoteEndpoints();
 
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
