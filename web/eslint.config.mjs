@@ -49,6 +49,19 @@ const eslintConfig = defineConfig([
     },
   },
 
+  {
+    /*
+     * Playwright fixtures hand control back through a callback conventionally named
+     * `use`. The React Hooks plugin reads any `use()` call as a hook and rejects it
+     * outside a component — a rule about React, applied to a file that renders nothing.
+     *
+     * Scoped to e2e/ rather than disabled inline so the reason is stated once, and so the
+     * rule keeps its full force everywhere React actually runs.
+     */
+    files: ["e2e/**/*.ts"],
+    rules: { "react-hooks/rules-of-hooks": "off" },
+  },
+
   globalIgnores([
     ".next/**",
     "out/**",
