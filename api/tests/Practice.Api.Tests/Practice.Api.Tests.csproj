@@ -21,6 +21,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Practice.Api\Practice.Api.csproj" />
+
+    <!--
+      The demo seeder, which lives in infra/ because nothing that ships may reference it
+      (DECISIONS.md D099). A test project is not a thing that ships — and the seeder writes
+      through the same aggregates and into the same triggers and filtered indexes as the
+      API, so it belongs behind the same gate rather than beside it, untested.
+    -->
+    <ProjectReference Include="..\..\..\infra\demoseed\DemoSeed.csproj" />
   </ItemGroup>
 
 </Project>

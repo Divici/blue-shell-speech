@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Held to the API's bar, deliberately.
+
+    This project sits outside /api, so `api/Directory.Build.props` is not picked up
+    automatically. Importing it explicitly is the point: the tool writes rows into the
+    clinical schema through the same aggregates the API uses, so a nullable warning here
+    is the same bug it would be there. One source of truth for the bar, one line to see it.
+  -->
+  <Import Project="../../api/Directory.Build.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>BlueShell.DemoSeed</AssemblyName>
+    <RootNamespace>BlueShell.DemoSeed</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    Infrastructure, for PracticeDbContext and its query filters. Domain and Application
+    arrive transitively.
+
+    NOT a reference to Practice.Api, and nothing in Practice.Api references this. That
+    asymmetry is the production-safety argument (DECISIONS.md D099): the deployed image is
+    built from Practice.Api and its transitive closure, and this project is not in it.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="../../api/src/Practice.Infrastructure/Practice.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!--
+    Entra authentication for the connection string, stated rather than inherited.
+
+    Azure SQL here is Entra-only — there is no SQL login and no password anywhere (D028) —
+    so the string carries "Authentication=Active Directory Default" and SqlClient needs
+    this package present to honour it. It arrives transitively through Infrastructure;
+    naming it makes the dependency visible to whoever reads the connection code, the same
+    way infra/dbgrant names it.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient.Extensions.Azure" Version="7.0.2" />
+  </ItemGroup>
+
+</Project>

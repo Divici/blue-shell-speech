@@ -10,4 +10,17 @@
     <Project Path="tests/Practice.Application.Tests/Practice.Application.Tests.csproj" />
     <Project Path="tests/Practice.Domain.Tests/Practice.Domain.Tests.csproj" />
   </Folder>
+
+  <!--
+    Outside src/ on purpose, and outside the api/ Docker build context with it.
+
+    DemoSeed writes through the same aggregates as the API and is gated by the same
+    `dotnet test`, so the solution should say it exists. It is listed here and NOT under
+    src/ because Practice.Api must never reference it: the image is built from a context of
+    ./api and publishes Practice.Api's transitive closure, and this project is outside both.
+    See DECISIONS.md D099.
+  -->
+  <Folder Name="/tools/">
+    <Project Path="../infra/demoseed/DemoSeed.csproj" />
+  </Folder>
 </Solution>
