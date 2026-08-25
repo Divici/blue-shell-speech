@@ -307,6 +307,51 @@ return: every one is a form against an endpoint that already exists and is alrea
         throw — a long-lived scope (a retention job draining `AudioDeleted`) silently gets
         an already-expired token. Relevant to task **2.10**.
 
+- [ ] **1.18 Fix five reviewer findings against `e8beb68` — verdict was NOT SOUND.**
+      **Run before any further Phase 2 work.** Every finding below was MEASURED on an
+      extracted copy, not argued. F1 and F3 are regressions introduced by 1.17 itself.
+      - **F1 (regression)** `/auth/password` is an account-existence oracle in status, body
+        AND time, and the attempts leave no audit row. Stalling `FROM [AspNetUsers]` 1.5s
+        under a 1s bound + 10s grace: known email + wrong password → **200
+        `{"status":"invalid"}` in 4696 ms**; unknown email → **504, empty body, 1527 ms**;
+        `COUNT(*) WHERE Metadata='reason=unknown-email'` → **0**. Cause:
+        `PracticeUserManager` moved the known-email path onto `deadline.Token`, but the
+        unknown-email branch's `await Task.Run(… HashPassword …, ct)`
+        (`ProviderAuthenticator.cs:71`) still rides `RequestAborted` and throws before its
+        audit write. Defeats `Unknown_email_is_indistinguishable_from_a_wrong_password`.
+      - **F2** **The five-failure lockout does not work.** Measured: 4 waves of 20
+        simultaneous wrong-password POSTs = **80 attempts, `AccessFailedCount = 4`,
+        `LockoutEnd = NULL`.** One increment survives per wave because `ConcurrencyStamp` is
+        `.IsConcurrencyToken()`, `UserStore.UpdateAsync` swallows
+        `DbUpdateConcurrencyException` into `IdentityResult.Failed`, and
+        `ProviderAuthenticator.cs:100/154/178` **discards that result**. 1.17's reorder
+        widened the window by adding a round trip between read and UPDATE. **There is no
+        login rate limiter anywhere in `api`** — `web/lib/rate-limit.ts` serves only the
+        consultation form — so an N-wide attacker buys N guesses per counted failure. This
+        is the threat D092 cited to justify rejecting `RequestAborted`. At minimum, stop
+        discarding the `IdentityResult`; coordinate with task **4.3**, which owns login rate
+        limiting and is now urgent rather than scheduled.
+      - **F3 (regression)** `LoginSucceeded` can describe a sign-in that never happened.
+        With `UPDATE [AspNetUsers]` stalled 20s under a 1s bound + 2s grace,
+        `POST /auth/mfa/verify` with a **valid** TOTP returned **504 with no session**, yet
+        the audit table held `MfaEnrolled, MfaChallenged, LoginSucceeded` and
+        `LastMfaAtUtc` was **null**. D092's asymmetry argument is about *failures* and
+        **inverts** for `CompleteSignInAsync`: a false `LoginSucceeded` is the row an
+        investigator uses to scope a breach.
+      - **F4** `docs/SECURITY.md` claims four more controls that do not exist: §Logging's
+        Serilog PHI-redaction policy and its asserting test (no Serilog package in any
+        `.csproj`; `Program.cs:34` says so); §Dependencies' "Dependabot on · pinned action
+        SHAs" (no `dependabot.yml`; every action is a floating tag); §Authorization's
+        "adding an endpoint without its authorization test fails CI" (nothing enumerates
+        `EndpointDataSource`); §Caching's "test hitting every authenticated route".
+      - **F5** `docs/THREAT_MODEL.md` still carries what SECURITY.md just retracted —
+        boundary ① S "rate limit per IP and per account; lockout with backoff", boundary ⑧ T
+        "pinned action SHAs". CLAUDE.md names this file as the security-adversary lane's
+        bar, so leaving it stale means the next review is judged against controls that were
+        removed from the compliance doc a commit earlier.
+      - Also noted: deleting the `.AddUserManager<PracticeUserManager>()` registration
+        leaves a **green build**, so the reflection test is its only guard.
+
 ## Phase 2 — Slice 6, dictation
 
 - [x] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
