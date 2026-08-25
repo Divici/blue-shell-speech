@@ -147,3 +147,8 @@ Do not attempt these. Recorded so nothing is silently dropped.
 Append one line per completed task: date, task id, commit sha.
 
 - 2026-08-25 · 1.1 appointment creation UI · practice-local to UTC conversion tested across both DST boundaries; 409 conflict surfaces the clashing visit time
+
+---
+
+**Resuming after a context reset?** Read `RESUME.md` at the repo root first — it has
+the bootstrap prompt and the current state.
