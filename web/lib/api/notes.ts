@@ -2,6 +2,7 @@ import "server-only";
 
 import { getSession } from "@/lib/auth/session";
 import { apiSignal } from "@/lib/api/timeouts";
+import { ApiConflictError } from "@/lib/api/errors";
 import type { GoalValue } from "@/lib/goal-schema";
 
 /**
@@ -55,7 +56,15 @@ function apiBaseUrl(): string {
   return url.replace(/\/$/, "");
 }
 
-export class ApiConflictError extends Error {}
+/*
+ * Re-exported rather than declared here.
+ *
+ * The consultation inbox raises the same refusal, and two declarations would be two
+ * distinct types — so a `catch (e instanceof ApiConflictError)` written against one would
+ * silently miss the other. `lib/api/errors.ts` holds the single class; this export keeps
+ * every existing import working.
+ */
+export { ApiConflictError };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T | null> {
   const session = await getSession();

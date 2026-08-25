@@ -43,6 +43,15 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             <Link href="/patients" className="text-sm font-medium text-ink hover:text-blue-deep">
               Patients
             </Link>
+            {/*
+              The destination "New consultation request, sign in to view" points at. The
+              notification carries no content by design (D079), so the only way to find out
+              what arrived is to come here — which means it has to be reachable from every
+              authenticated screen rather than from a link in an email.
+            */}
+            <Link href="/enquiries" className="text-sm font-medium text-ink hover:text-blue-deep">
+              Enquiries
+            </Link>
           </nav>
 
           <div className="ml-auto flex items-center gap-4">

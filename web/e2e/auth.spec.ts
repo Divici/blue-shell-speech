@@ -111,7 +111,14 @@ test.describe("unauthenticated access", () => {
  * protected by existing there, not by remembering to add a guard.
  */
 test.describe("patient routes are protected", () => {
-  const routes = ["/dashboard", "/patients", "/patients/new", "/today", "/appointments/new"];
+  const routes = [
+    "/dashboard",
+    "/patients",
+    "/patients/new",
+    "/today",
+    "/appointments/new",
+    "/enquiries",
+  ];
 
   // A note is the most sensitive page in the app: clinical observations about a child.
   const noteRoute = "/notes/11111111-1111-1111-1111-111111111111";
@@ -125,6 +132,13 @@ test.describe("patient routes are protected", () => {
 
   test("a clinical note is unreachable without a session", async ({ page }) => {
     await page.goto(noteRoute);
+    await expect(page).toHaveURL(/\/login$/);
+  });
+
+  test("a consultation enquiry is unreachable without a session", async ({ page }) => {
+    // A parent's account of their child's difficulties. Not PHI by the regulation's
+    // definition, and protected exactly like it — see ConsultationRequest.
+    await page.goto("/enquiries/11111111-1111-1111-1111-111111111111");
     await expect(page).toHaveURL(/\/login$/);
   });
 

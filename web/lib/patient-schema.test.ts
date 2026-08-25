@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { validateNewPatient, type NewPatientInput } from "./patient-schema";
+import {
+  validateConversion,
+  validateNewPatient,
+  type NewPatientInput,
+} from "./patient-schema";
 
 const TODAY = new Date("2026-08-24T12:00:00Z");
 
@@ -72,5 +76,67 @@ describe("validateNewPatient", () => {
       validateNewPatient({ ...valid, clinicalSummary: "x".repeat(4001) }, TODAY)
         .errors.clinicalSummary,
     ).toBeDefined();
+  });
+});
+
+/**
+ * Converting an enquiry into a patient.
+ *
+ * The same two fields the new-patient form asks about the child, minus the ones the
+ * enquiry already holds. The date rules are the SAME rules — shared through
+ * dateOfBirthError rather than restated — because a birthdate the new-patient form calls a
+ * typo cannot be one this form accepts.
+ */
+describe("validateConversion", () => {
+  it("accepts a surname and a plausible date of birth", () => {
+    expect(
+      validateConversion({ lastName: "Reyes", dateOfBirth: "2024-02-24" }, TODAY).errors,
+    ).toEqual({});
+  });
+
+  it("trims the surname", () => {
+    expect(
+      validateConversion({ lastName: "  Reyes  ", dateOfBirth: "2024-02-24" }, TODAY)
+        .value.lastName,
+    ).toBe("Reyes");
+  });
+
+  it("asks for a surname, which the public form never collected", () => {
+    expect(
+      validateConversion({ lastName: "   ", dateOfBirth: "2024-02-24" }, TODAY)
+        .errors.lastName,
+    ).toBeDefined();
+  });
+
+  /**
+   * The shared date rules, exercised through the second caller.
+   *
+   * Control: the dateOfBirthError call in validateConversion.
+   * Deleted (dateOfBirth never checked) → red on all four cases, "AssertionError:
+   * expected undefined to be defined".
+   */
+  it.each([
+    ["", "missing"],
+    ["not-a-date", "malformed"],
+    ["2030-01-01", "in the future"],
+    ["1990-02-24", "an implausible year"],
+  ])("refuses %s (%s)", (dateOfBirth) => {
+    expect(
+      validateConversion({ lastName: "Reyes", dateOfBirth }, TODAY).errors.dateOfBirth,
+    ).toBeDefined();
+  });
+
+  /**
+   * The two callers give the same answer to the same date.
+   *
+   * They are separate functions and they must not drift: the day they disagree, a
+   * conversion writes a birthdate the ordinary form would have questioned, into the field
+   * every early-intervention decision hangs on.
+   */
+  it("agrees with validateNewPatient about every date", () => {
+    for (const dateOfBirth of ["", "not-a-date", "2030-01-01", "1990-02-24", "2024-02-24"]) {
+      expect(validateConversion({ lastName: "Reyes", dateOfBirth }, TODAY).errors.dateOfBirth)
+        .toBe(validateNewPatient({ ...valid, dateOfBirth }, TODAY).errors.dateOfBirth);
+    }
   });
 });

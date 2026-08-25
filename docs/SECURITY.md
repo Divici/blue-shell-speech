@@ -147,7 +147,8 @@ Append-only `AuditEvent`. Application principal has **no `UPDATE` or `DELETE`** 
 
 Recorded: `PatientViewed`, `NoteSigned`, `NoteAmended`, `NoteDiscarded`, `AudioDeleted`,
 `LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `ExportGenerated`,
-`ConsultationRequestReceived`, `ConsultationNotificationFailed`.
+`ConsultationRequestReceived`, `ConsultationNotificationFailed`,
+`ConsultationRequestViewed`, `ConsultationRequestUpdated`.
 
 **Reads are audited, not just writes.** Under HIPAA, access to ePHI is an auditable event; most
 homegrown systems log only writes and discover the gap during an investigation.
@@ -219,6 +220,35 @@ A notification that cannot be delivered is `ConsultationNotificationFailed`, its
 rather than a `Failure` outcome on the arrival — the enquiry DID arrive, and a row saying
 otherwise is what gets counted a year later. A silently failing notifier looks exactly like a
 working one.
+
+**Reading the consultation inbox is audited**, as `ConsultationRequestViewed` — both the
+detail read (`scope=detail`, naming the enquiry) and the listing
+(`scope=list;count=n;status=…`, naming none, because a list has no single subject). The
+enquiry is not PHI: the family are not patients and there is no treatment relationship. It is
+a child's first name beside a parent's description of that child's difficulties, which is the
+same category of information whatever the regulation calls it, so it is read under the same
+controls.
+
+**Its own event type rather than `PatientViewed`**, which is the one place D076's argument
+against growing the vocabulary is overruled. `PatientViewed` answers "who accessed a child's
+medical record"; recording an enquiry there would inflate that count by exactly the set of
+people who have never been treated here, and it is a count read once, years later, by somebody
+who was not present. The `count=` on the listing rows follows D065's `versions=n` reasoning:
+"somebody opened the inbox" cannot tell one enquiry from forty apart afterwards.
+
+**Both endpoints that disclose an enquiry write the row**, not only the one the UI happens to
+call today — that is the whole of D065, applied before a second reader exists rather than
+after. The detail read is the only endpoint returning what the parent wrote; the summary type
+carries no `Concerns` member at all, so the listing cannot become a second, larger disclosure
+of the same content by accident.
+
+Moving an enquiry is `ConsultationRequestUpdated` with
+`action=contacted|converted|declined`, and the conversion also carries `patient={publicId}` —
+the opaque id of the record it became, which is the answer to "where did this family come
+from". The transition and its audit row commit together through
+`AtomicWrites.WriteAtomicallyAsync`, as does the conversion, which creates the patient, links
+the enquiry and writes the row in one transaction: a patient created with the enquiry still
+saying `New` is the state that produces a SECOND record for the same child on the next tap.
 
 `Metadata` never contains clinical content — the audit log is the table most likely to be
 exported or read by a third party, which multiplies the blast radius of anything in it. The

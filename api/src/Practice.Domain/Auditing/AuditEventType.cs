@@ -54,4 +54,32 @@ public enum AuditEventType
     /// here. A notifier that silently fails looks exactly like one that works.
     /// </summary>
     ConsultationNotificationFailed = 81,
+
+    /// <summary>
+    /// Michelle read an enquiry, or the inbox listing them.
+    ///
+    /// ITS OWN EVENT RATHER THAN PatientViewed, which is the one place this vocabulary is
+    /// allowed to grow (D076 argues against growing it at all). The family who sent an
+    /// enquiry are NOT patients — there is no treatment relationship, which is the whole
+    /// reason ConsultationRequest's docstring calls the row PHI-adjacent rather than PHI —
+    /// so recording their enquiry as a patient record being viewed would inflate the count
+    /// of "who accessed a child's medical record" by exactly the set of people who have
+    /// never been treated here. That count is read once, years later, by somebody who was
+    /// not here, and it has to mean one thing.
+    ///
+    /// Written on both endpoints that disclose an enquiry, because an endpoint has to be
+    /// safe on its own terms rather than because of who currently calls it (D065). The
+    /// metadata says which read happened and how much came back.
+    /// </summary>
+    ConsultationRequestViewed = 82,
+
+    /// <summary>
+    /// An enquiry moved: contacted, converted into a patient, or declined.
+    ///
+    /// Mirrors PatientUpdated deliberately. `action=` carries a fixed vocabulary, and the
+    /// conversion also carries the new patient's public id — that link is the answer to
+    /// "where did this family come from", and it is a Guid because nothing patient-facing
+    /// in this system is a sequential integer (CLAUDE.md conventions).
+    /// </summary>
+    ConsultationRequestUpdated = 83,
 }

@@ -1,14 +1,27 @@
 using Microsoft.EntityFrameworkCore;
 using Practice.Application.Consultations;
+using Practice.Application.Providers;
 using Practice.Domain.Auditing;
 using Practice.Domain.Consultations;
+using Practice.Domain.Patients;
 using Practice.Infrastructure.Identity;
 using Practice.Infrastructure.Persistence;
 
 namespace Practice.Api.Consultations;
 
 /// <summary>
-/// The public intake form's only endpoint.
+/// Public intake, and the inbox it arrives in.
+///
+/// TWO AUDIENCES ON ONE ROUTE PREFIX, AND THE SPLIT IS THE POINT. <c>POST /</c> is reached
+/// by a parent with no account; everything else here is reached by Michelle through a
+/// session, is scoped by the global query filter, and answers 404 for an enquiry belonging
+/// to another provider exactly as it does for one that does not exist (D052).
+///
+/// AN ENQUIRY IS READ LIKE PATIENT DATA EVEN THOUGH IT IS NOT PHI. A child's first name
+/// beside a parent's description of that child's difficulties is the same category of
+/// information whatever the regulation calls it, and it becomes PHI the moment Michelle
+/// acts on it — so the reads below are audited, on the endpoints the product actually
+/// calls rather than on one that merely looks like the read endpoint (D065).
 ///
 /// THIS IS THE ONE ROUTE IN THE API THAT DOES NOT REQUIRE A PROVIDER. Every other endpoint
 /// opens with <c>if (provider.ProviderId is null) return Results.Unauthorized()</c>; this
@@ -35,7 +48,14 @@ public static class ConsultationEndpoints
     {
         var group = app.MapGroup("/consultation-requests").WithTags("Consultations");
 
+        // Anonymous. Everything below it takes a provider from the forwarded session.
         group.MapPost("/", SubmitConsultationRequest);
+
+        group.MapGet("/", ListConsultationRequests);
+        group.MapGet("/{publicId:guid}", GetConsultationRequest);
+        group.MapPost("/{publicId:guid}/contacted", MarkContacted);
+        group.MapPost("/{publicId:guid}/declined", DeclineConsultationRequest);
+        group.MapPost("/{publicId:guid}/convert", ConvertConsultationRequest);
 
         return app;
     }
@@ -293,6 +313,521 @@ public static class ConsultationEndpoints
             $"/consultation-requests/{publicId}", new SubmittedConsultationRequest(publicId));
     }
 
+
+    // ------------------------------------------------------------------ the inbox
+
+    /*
+     * WHAT MICHELLE READS WHEN A TRANSITION IS REFUSED.
+     *
+     * Both sentences describe what the row IS rather than which method threw, and neither
+     * recommends an action the API would then refuse (D076). A closed enquiry is not a
+     * malfunction — it is a rule the reader needs to understand — so it crosses the BFF as
+     * a 409 with its wording intact, the same treatment a goal that is already closed gets.
+     */
+    private const string AlreadyAPatient =
+        "This enquiry has already become a patient. Open the patient record instead.";
+
+    private const string AlreadyDeclined =
+        "This enquiry was declined and is kept as it was. Nothing further can be recorded "
+        + "against it.";
+
+    /// <summary>
+    /// The moves the inbox offers. Named so the refusal below can mirror the aggregate's
+    /// own rules rather than approximating them with one stricter set.
+    /// </summary>
+    private enum InboxTransition
+    {
+        Contacted,
+        Converted,
+        Declined,
+    }
+
+    /// <summary>
+    /// The triage list: everything still open first, and within a status the newest first.
+    ///
+    /// THE ORDER IS A PRODUCT DECISION. Michelle opens this between houses to find the
+    /// families nobody has replied to; sorted by arrival alone, a new enquiry sits under a
+    /// year of declined ones. ConsultationStatus is numbered New, Contacted, Converted,
+    /// Declined for exactly this reason, and its values are fixed.
+    ///
+    /// THE SUMMARY DOES NOT CARRY WHAT THE PARENT WROTE. Triage needs a name, an age, and
+    /// how long they have been waiting; the description of a child's difficulties belongs
+    /// to the detail read, which is where the disclosure is audited as one. A list
+    /// carrying it would be a second, larger disclosure of the same content — which is
+    /// precisely the shape D065 found on note history.
+    /// </summary>
+    private static async Task<IResult> ListConsultationRequests(
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        CancellationToken ct,
+        string? status = null)
+    {
+        if (provider.ProviderId is null) return Results.Unauthorized();
+
+        var query = db.ConsultationRequests.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            /*
+             * A filter nobody defined is refused, never silently ignored.
+             *
+             * Ignoring it renders "nothing to answer" for a practice with a full inbox and
+             * looks like it worked. Enum.IsDefined as well as TryParse, because TryParse
+             * accepts a NUMERIC string — "99" would otherwise arrive as a legal value of
+             * this type and match no row, which is the same wrong screen by a different
+             * route (the guard ConsultationRequest.Submit makes on the way in).
+             */
+            if (!Enum.TryParse<ConsultationStatus>(status, ignoreCase: true, out var wanted)
+                || !Enum.IsDefined(wanted))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["status"] = ["Choose New, Contacted, Converted, or Declined."],
+                });
+            }
+
+            query = query.Where(c => c.Status == wanted);
+        }
+
+        /*
+         * Columns in SQL, enum names in memory.
+         *
+         * Translating `Status.ToString()` into the query is what turned "no cue level was
+         * recorded" into an empty string on the goals projection. The two-step keeps the
+         * column list narrow and lets the naming happen where it behaves.
+         */
+        var rows = await query
+            .OrderBy(c => c.Status).ThenByDescending(c => c.SubmittedAtUtc)
+            .Select(c => new
+            {
+                c.PublicId,
+                c.ParentName,
+                c.ChildFirstName,
+                c.ChildAgeMonths,
+                c.PreferredContactMethod,
+                c.Status,
+                c.SubmittedAtUtc,
+                /*
+                 * The converted patient as a GUID, resolved in the query.
+                 *
+                 * The row stores the clustered key — a real foreign key is the only thing
+                 * that keeps this link honest — and a clustered key never crosses the
+                 * wire. The subquery is filtered like every other read of Patients, so a
+                 * link that somehow pointed outside this provider's caseload resolves to
+                 * null rather than confirming that the row exists.
+                 */
+                ConvertedPatientPublicId = db.Patients
+                    .Where(p => p.Id == c.ConvertedPatientId)
+                    .Select(p => (Guid?)p.PublicId)
+                    .FirstOrDefault(),
+            })
+            .ToListAsync(ct);
+
+        var results = rows
+            .Select(c => new ConsultationRequestSummary(
+                c.PublicId, c.ParentName, c.ChildFirstName, c.ChildAgeMonths,
+                c.PreferredContactMethod.ToString(), c.Status.ToString(),
+                c.SubmittedAtUtc, c.ConvertedPatientPublicId))
+            .ToList();
+
+        /*
+         * THE LIST IS A DISCLOSURE, AND THE ROW SAYS HOW BIG A ONE.
+         *
+         * Every entry carries a parent's name and a child's first name. "Somebody opened
+         * the inbox" cannot tell one enquiry from forty apart afterwards, and afterwards
+         * is the only time this table is read — the same argument D065 makes for
+         * `versions=n` on a note history. A count is not content; nothing the parent typed
+         * touches AuditEvents.
+         *
+         * EntityPublicId is null because a list has no single subject, which is also what
+         * distinguishes these rows from the detail reads below.
+         */
+        await audit.WriteAsync(AuditEvent.Record(
+            AuditEventType.ConsultationRequestViewed, AuditOutcome.Success,
+            providerId: provider.ProviderId,
+            entityType: nameof(ConsultationRequest),
+            metadata: $"scope=list;count={results.Count};status={status ?? "all"}"));
+
+        return Results.Ok(results);
+    }
+
+    /// <summary>
+    /// One enquiry, in full — and the only endpoint that returns what the parent wrote.
+    ///
+    /// THIS IS THE ENDPOINT THE DETAIL VIEW CALLS, and therefore the one that has to carry
+    /// the audit row. D065 is the finding that a sibling endpoint auditing correctly is a
+    /// control on paper once the product stops calling it; keeping the disclosure and its
+    /// record in the same handler is what makes that unable to drift apart again.
+    ///
+    /// The row is written AFTER the read resolved and only when something was disclosed. A
+    /// row on a 404 would say a stranger saw an enquiry they were refused, and would put
+    /// somebody who read nothing into a count of who read this family's words.
+    /// </summary>
+    private static async Task<IResult> GetConsultationRequest(
+        Guid publicId,
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        CancellationToken ct)
+    {
+        if (provider.ProviderId is null) return Results.Unauthorized();
+
+        var enquiry = await db.ConsultationRequests.AsNoTracking()
+            .SingleOrDefaultAsync(c => c.PublicId == publicId, ct);
+
+        if (enquiry is null) return Results.NotFound();
+
+        var convertedPatient = await ConvertedPatientPublicIdAsync(db, enquiry, ct);
+
+        await audit.WriteAsync(AuditEvent.Record(
+            AuditEventType.ConsultationRequestViewed, AuditOutcome.Success,
+            providerId: provider.ProviderId,
+            entityType: nameof(ConsultationRequest), entityPublicId: publicId,
+            metadata: "scope=detail"));
+
+        return Results.Ok(new ConsultationRequestDetail(
+            enquiry.PublicId,
+            enquiry.ParentName,
+            enquiry.Email,
+            enquiry.Phone,
+            enquiry.ChildFirstName,
+            enquiry.ChildAgeMonths,
+            enquiry.Concerns,
+            enquiry.PreferredContactMethod.ToString(),
+            enquiry.Status.ToString(),
+            enquiry.SubmittedAtUtc,
+            convertedPatient));
+    }
+
+    /// <summary>Michelle has replied. Idempotent, as the aggregate is.</summary>
+    private static Task<IResult> MarkContacted(
+        Guid publicId,
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        CancellationToken ct) =>
+        ApplyTransitionAsync(
+            publicId, db, provider, audit,
+            InboxTransition.Contacted, enquiry => enquiry.MarkContacted(), ct);
+
+    /// <summary>
+    /// Not going ahead — the family moved, or the practice is not the right fit.
+    ///
+    /// A transition, never a delete. The enquiry stays exactly as the parent wrote it:
+    /// "who did we turn away, and when" is a question about the practice, and a deleted
+    /// row answers it with silence.
+    /// </summary>
+    private static Task<IResult> DeclineConsultationRequest(
+        Guid publicId,
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        CancellationToken ct) =>
+        ApplyTransitionAsync(
+            publicId, db, provider, audit,
+            InboxTransition.Declined, enquiry => enquiry.Decline(), ct);
+
+    /// <summary>
+    /// The enquiry became a patient.
+    ///
+    /// THE CHILD'S FIRST NAME COMES OFF THE ENQUIRY; THE SURNAME AND DATE OF BIRTH ARE
+    /// ASKED FOR. The public form collects a first name and an age in months and nothing
+    /// else about the child, deliberately — so a conversion cannot be a pure copy, and
+    /// deriving a date of birth from an age in months would put a value in the field every
+    /// early-intervention decision hangs on that nobody actually stated.
+    ///
+    /// ONE TRANSACTION, because the halves are worthless apart. A patient created with the
+    /// enquiry still saying New is the state that produces a SECOND record for the same
+    /// child on the next tap — on a caseload where the duplicate silently collects half
+    /// the sessions and neither record is the whole story.
+    /// </summary>
+    private static async Task<IResult> ConvertConsultationRequest(
+        Guid publicId,
+        ConvertConsultationRequest request,
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        TimeProvider clock,
+        CancellationToken ct)
+    {
+        if (provider.ProviderId is null) return Results.Unauthorized();
+
+        /*
+         * The cheap first pass, and NOT the answer — the same shape as the intake write
+         * above. An ordinary refusal costs one indexed read rather than a transaction, and
+         * everything it concludes is asked again inside against the row being written.
+         */
+        var existing = await db.ConsultationRequests.AsNoTracking()
+            .SingleOrDefaultAsync(c => c.PublicId == publicId, ct);
+
+        if (existing is null) return Results.NotFound();
+
+        var early = RefusalToTransition(existing, InboxTransition.Converted);
+        if (early is not null) return Results.Conflict(new { message = early });
+
+        // Matches CreatePatient exactly. Patient.Create uses it only as the upper bound on
+        // a plausible birthdate, and two paths creating a patient must not disagree about
+        // what "today" is.
+        var today = DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime);
+
+        var gone = false;
+        string? refusal = null;
+        Dictionary<string, string[]>? invalid = null;
+        ConsultationRequestSummary? converted = null;
+
+        /*
+         * A LOCAL FUNCTION rather than an inline lambda, for the reason DiscardDraft gives
+         * for the same shape: the call can be wrapped — or unwrapped — without
+         * re-indenting the body, which is what makes "remove the transaction and see
+         * whether the patient survives" a change a reviewer can actually run.
+         */
+        async Task ConvertTheEnquiry(CancellationToken attempt)
+        {
+            // Reset per attempt: every one of these is a conclusion, and the helper's
+            // contract says a conclusion from a previous attempt may not survive into this
+            // one.
+            gone = false;
+            refusal = null;
+            invalid = null;
+            converted = null;
+
+            /*
+             * RE-READ. The entity above is detached by the time this runs — the change
+             * tracker is cleared at the top of every attempt.
+             */
+            var enquiry = await db.ConsultationRequests
+                .SingleOrDefaultAsync(c => c.PublicId == publicId, attempt);
+
+            if (enquiry is null)
+            {
+                gone = true;
+                return;
+            }
+
+            /*
+             * ASKED AGAIN, OF THE ROW BEING WRITTEN. This is the guard; the pass above is
+             * the optimisation.
+             *
+             * Michelle taps Convert on her phone while the tap she made a moment earlier
+             * on the tablet is still in flight. Decided outside and applied inside, both
+             * requests pass their own check and the child ends up with two records — the
+             * D081 shape, with a duplicated clinical record at the end of it rather than a
+             * deleted one.
+             */
+            refusal = RefusalToTransition(enquiry, InboxTransition.Converted);
+            if (refusal is not null) return;
+
+            /*
+             * CONSTRUCTED HERE, on each attempt, and VALIDATED here as well.
+             *
+             * Fresh per attempt because an entity a previous attempt saved carries a
+             * store-generated key, and re-adding it asks SQL Server for an explicit
+             * identity insert rather than a new row (D075).
+             *
+             * Validated here because the first name feeding it comes off the RE-READ row
+             * rather than the one checked outside. Nothing in this API edits that column,
+             * so the two agree today — but "today" is not a control, and answering 500
+             * where the early pass answers 400 is exactly the failure this repetition
+             * exists to avoid.
+             */
+            Patient patient;
+            try
+            {
+                patient = Patient.Create(
+                    provider.ProviderId.Value,
+                    enquiry.ChildFirstName,
+                    request.LastName,
+                    request.DateOfBirth,
+                    today);
+            }
+            catch (ArgumentException ex)
+            {
+                invalid = new Dictionary<string, string[]>
+                {
+                    [ex.ParamName ?? "request"] = [ex.Message],
+                };
+                return;
+            }
+
+            db.Patients.Add(patient);
+
+            // Saved before ConvertTo, because the link is the identity the database
+            // assigns and there is no earlier moment at which it exists.
+            await db.SaveChangesAsync(attempt);
+
+            enquiry.ConvertTo(patient.Id);
+            await db.SaveChangesAsync(attempt);
+
+            converted = SummaryOf(enquiry, patient.PublicId);
+
+            await audit.WriteAsync(AuditEvent.Record(
+                AuditEventType.ConsultationRequestUpdated, AuditOutcome.Success,
+                providerId: provider.ProviderId,
+                entityType: nameof(ConsultationRequest), entityPublicId: publicId,
+                // Opaque ids and a fixed word. The child's name is on the row this points
+                // at, and AuditEvents is the table that is never purged.
+                metadata: $"action=converted;patient={patient.PublicId}"));
+        }
+
+        await db.WriteAtomicallyAsync(ConvertTheEnquiry, ct);
+
+        if (gone) return Results.NotFound();
+        if (invalid is not null) return Results.ValidationProblem(invalid);
+        if (refusal is not null) return Results.Conflict(new { message = refusal });
+
+        return Results.Ok(converted);
+    }
+
+    /// <summary>
+    /// The shared shape of the two status moves: re-read, re-check, apply, audit, commit.
+    ///
+    /// ONE BODY RATHER THAN TWO COPIES, for the reason NoteEndpoints.RefusalToDiscard
+    /// gives: two copies are two things to keep in step, and the copy that drifts is the
+    /// one standing between a request and a row it should not have changed.
+    ///
+    /// The transition and its audit row are one transaction. They are a single row's
+    /// status and the only record of who moved it — a save that lands without the other is
+    /// either an unexplained state change or a claim about one that never happened.
+    /// </summary>
+    private static async Task<IResult> ApplyTransitionAsync(
+        Guid publicId,
+        PracticeDbContext db,
+        IProviderContext provider,
+        IAuditWriter audit,
+        InboxTransition transition,
+        Action<ConsultationRequest> apply,
+        CancellationToken ct)
+    {
+        if (provider.ProviderId is null) return Results.Unauthorized();
+
+        // The cheap first pass. Not the answer — see the re-check inside.
+        var existing = await db.ConsultationRequests.AsNoTracking()
+            .SingleOrDefaultAsync(c => c.PublicId == publicId, ct);
+
+        if (existing is null) return Results.NotFound();
+
+        var early = RefusalToTransition(existing, transition);
+        if (early is not null) return Results.Conflict(new { message = early });
+
+        var gone = false;
+        string? refusal = null;
+        ConsultationRequestSummary? moved = null;
+
+        // A local function for the same reason as ConvertTheEnquiry above.
+        async Task MoveTheEnquiry(CancellationToken attempt)
+        {
+            gone = false;
+            refusal = null;
+            moved = null;
+
+            var enquiry = await db.ConsultationRequests
+                .SingleOrDefaultAsync(c => c.PublicId == publicId, attempt);
+
+            if (enquiry is null)
+            {
+                gone = true;
+                return;
+            }
+
+            // The guard, against the row actually being changed (D081).
+            refusal = RefusalToTransition(enquiry, transition);
+            if (refusal is not null) return;
+
+            apply(enquiry);
+            await db.SaveChangesAsync(attempt);
+
+            /*
+             * Resolved rather than assumed absent.
+             *
+             * Neither move that reaches here can leave a converted enquiry —
+             * RefusalToTransition refuses both of them on a converted row — so this is
+             * null on every path today. It is a query rather than a literal because that
+             * is a fact about the CURRENT refusal rules, and a summary that silently
+             * dropped the link the day those rules change is not the sort of thing anybody
+             * notices.
+             */
+            var convertedPatient = await ConvertedPatientPublicIdAsync(db, enquiry, attempt);
+
+            moved = SummaryOf(enquiry, convertedPatient);
+
+            await audit.WriteAsync(AuditEvent.Record(
+                AuditEventType.ConsultationRequestUpdated, AuditOutcome.Success,
+                providerId: provider.ProviderId,
+                entityType: nameof(ConsultationRequest), entityPublicId: publicId,
+                metadata: $"action={transition.ToString().ToLowerInvariant()}"));
+        }
+
+        await db.WriteAtomicallyAsync(MoveTheEnquiry, ct);
+
+        if (gone) return Results.NotFound();
+        if (refusal is not null) return Results.Conflict(new { message = refusal });
+
+        return Results.Ok(moved);
+    }
+
+    /// <summary>
+    /// Why this enquiry cannot make this move — the sentence Michelle reads — or null when
+    /// it can.
+    ///
+    /// IT MIRRORS THE AGGREGATE RATHER THAN APPROXIMATING IT, and the target is a parameter
+    /// for exactly that reason. ConsultationRequest.Decline refuses only a CONVERTED
+    /// enquiry; MarkContacted and ConvertTo refuse both closed states. One stricter rule
+    /// covering all three would refuse a second tap on Decline that the aggregate allows —
+    /// a rule the endpoint invented and nothing else in the system holds, which is the
+    /// mirror image of D076's defect, where the endpoint recommended a door the aggregate
+    /// had locked.
+    ///
+    /// Written here as well as in the aggregate on the D064 principle: the rule lives in
+    /// more than one place so that loosening one does not remove it.
+    /// </summary>
+    private static string? RefusalToTransition(
+        ConsultationRequest enquiry, InboxTransition target) => enquiry.Status switch
+        {
+            // A child on the caseload. Every move would contradict a clinical record that
+            // already exists, declining included.
+            ConsultationStatus.Converted => AlreadyAPatient,
+
+            // Declining twice is not a different state. Reopening a declined enquiry is.
+            ConsultationStatus.Declined when target is not InboxTransition.Declined =>
+                AlreadyDeclined,
+
+            _ => null,
+        };
+
+    /// <summary>
+    /// The patient an enquiry became, as a public id — or null if it became none.
+    ///
+    /// Filtered like every other read of Patients, so a link pointing outside this
+    /// provider's caseload resolves to null rather than confirming the row exists.
+    /// </summary>
+    private static async Task<Guid?> ConvertedPatientPublicIdAsync(
+        PracticeDbContext db, ConsultationRequest enquiry, CancellationToken ct)
+    {
+        if (enquiry.ConvertedPatientId is null) return null;
+
+        return await db.Patients.AsNoTracking()
+            .Where(p => p.Id == enquiry.ConvertedPatientId)
+            .Select(p => (Guid?)p.PublicId)
+            .SingleOrDefaultAsync(ct);
+    }
+
+    /// <summary>
+    /// The triage view of a row. Carries no Concerns, by construction — see
+    /// <see cref="ConsultationRequestSummary"/>.
+    /// </summary>
+    private static ConsultationRequestSummary SummaryOf(
+        ConsultationRequest enquiry, Guid? convertedPatientPublicId) =>
+        new(
+            enquiry.PublicId,
+            enquiry.ParentName,
+            enquiry.ChildFirstName,
+            enquiry.ChildAgeMonths,
+            enquiry.PreferredContactMethod.ToString(),
+            enquiry.Status.ToString(),
+            enquiry.SubmittedAtUtc,
+            convertedPatientPublicId);
+
     /// <summary>
     /// Answers "whose enquiry is this" for a submission that arrived with no session.
     ///
@@ -366,3 +901,55 @@ public sealed record SubmitConsultationRequest(
 /// none of them.
 /// </summary>
 public sealed record SubmittedConsultationRequest(Guid PublicId);
+
+/// <summary>
+/// One row of the inbox — enough to triage, and NOT what the parent wrote.
+///
+/// THE ABSENCE OF `Concerns` IS THE CONTROL, not a rendering choice. A description of a
+/// child's difficulties is the most sensitive thing on this row, and an inbox needs a name,
+/// an age and how long the family has been waiting. Keeping it off here means exactly one
+/// endpoint discloses it — the one that records the disclosure — where a list carrying it
+/// would be a second, larger, unaudited read of the same content one fetch away (D065).
+/// </summary>
+/// <param name="ConvertedPatientPublicId">
+/// The child's record, once this enquiry became one. A GUID: the row stores the clustered
+/// key because a real foreign key is the only thing that keeps the link honest, and no
+/// clustered key crosses the wire (CLAUDE.md conventions).
+/// </param>
+public sealed record ConsultationRequestSummary(
+    Guid PublicId,
+    string ParentName,
+    string ChildFirstName,
+    short ChildAgeMonths,
+    string PreferredContactMethod,
+    string Status,
+    DateTime SubmittedAtUtc,
+    Guid? ConvertedPatientPublicId);
+
+/// <summary>
+/// The whole enquiry, including what the parent wrote about their child.
+///
+/// Returned by one endpoint, which audits every read of it.
+/// </summary>
+public sealed record ConsultationRequestDetail(
+    Guid PublicId,
+    string ParentName,
+    string Email,
+    string? Phone,
+    string ChildFirstName,
+    short ChildAgeMonths,
+    string Concerns,
+    string PreferredContactMethod,
+    string Status,
+    DateTime SubmittedAtUtc,
+    Guid? ConvertedPatientPublicId);
+
+/// <summary>
+/// What a conversion needs that the enquiry does not already hold.
+///
+/// The public form asks a first name and an age in months, on purpose — so a surname and a
+/// date of birth have to be typed. NOT derived from the age: every early-intervention
+/// decision hangs on age in months, and a birthdate computed from a parent's rounded
+/// estimate is a value nobody stated sitting in the field that matters most.
+/// </summary>
+public sealed record ConvertConsultationRequest(string LastName, DateOnly DateOfBirth);
