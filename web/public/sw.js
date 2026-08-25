@@ -1,3 +1,15 @@
+/**
+ * AT A GLANCE
+ * -----------
+ * A service worker is a script the browser keeps running in the background, separate from
+ * any page — it can intercept every network request the app makes and answer it from
+ * storage instead of the network. That is how a web app works offline.
+ *
+ * This one is deliberately almost powerless. It saves three static files (an offline page,
+ * its stylesheet, an icon) and declines to handle anything else, so no patient data can
+ * ever reach the device's disk through it.
+ */
+
 /*
  * Blue Shell Speech — service worker.
  *

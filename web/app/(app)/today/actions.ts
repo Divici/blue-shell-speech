@@ -1,5 +1,20 @@
 "use server";
 
+/**
+ * AT A GLANCE
+ * -----------
+ * Server actions for the day view.
+ *
+ * The `"use server"` directive above changes what these functions ARE. They look like
+ * ordinary functions and a form calls them like ordinary functions — but they run on the
+ * server, never in the browser. Next.js creates the HTTP endpoint, sends the request, and
+ * returns the result, all of which would otherwise be a hand-written `fetch`.
+ *
+ * That matters here because it means the browser never talks to the .NET API. It talks to
+ * this file, this file talks to the API, and the session identity is read server-side —
+ * so nothing the browser submits can name a different clinician.
+ */
+
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { notesApi, ApiConflictError } from "@/lib/api/notes";

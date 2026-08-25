@@ -1,4 +1,17 @@
 /**
+ * AT A GLANCE
+ * -----------
+ * Saves a recording to the device so a house with bad signal does not lose five minutes of
+ * a clinician's work. It is stored in IndexedDB — the browser's larger, structured local
+ * database — and encrypted before it is written.
+ *
+ * The rule everywhere else in this project is that patient information never goes into
+ * browser storage at all. This file is the one documented exception, and the encryption is
+ * what buys the exception: the key is generated so that JavaScript cannot read it back
+ * out, and drafts delete themselves once the server confirms it has them.
+ */
+
+/**
  * Encrypted offline storage for dictation drafts.
  *
  * THIS IS A DOCUMENTED DEVIATION (DECISIONS.md D005).

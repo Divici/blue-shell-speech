@@ -1,4 +1,17 @@
 /**
+ * AT A GLANCE
+ * -----------
+ * A wrapper around the browser's built-in microphone recording (`MediaRecorder`), adding
+ * the rules this product needs: a five-minute cap per take, one button that pauses and
+ * resumes, and an auto-stop so a forgotten recording ends itself.
+ *
+ * The interesting part is `pickMimeType()`. An iPhone records a different audio format
+ * (mp4/AAC) than desktop Chrome (webm), so the file has to ask what is actually supported
+ * — and if it cannot tell, it returns an empty string rather than guessing, because a
+ * wrong format silently breaks transcription later.
+ */
+
+/**
  * Dictation recording.
  *
  * Wraps MediaRecorder with the rules this product actually needs:

@@ -6,6 +6,18 @@ import { ShellMark } from "@/components/brand/ShellMark";
 import { NAV_ITEMS, PRACTICE_NAME } from "@/lib/site-content";
 
 /**
+ * AT A GLANCE
+ * -----------
+ * The public website's top navigation bar.
+ *
+ * Note the `"use client"` at the very top of this file. In the Next.js App Router, files
+ * run on the SERVER by default and only ship to the browser if they opt in with that
+ * directive. This one opts in for a single reason: the mobile menu has to open and close,
+ * which needs `useState`.
+ *
+ * Keeping that boundary tight is deliberate — everything the browser receives is code an
+ * attacker can read, so the less that crosses, the better.
+ *
  * Sticky site header.
  *
  * A Client Component, and only because of the mobile menu — the nav links themselves are

@@ -1,4 +1,17 @@
 /**
+ * AT A GLANCE
+ * -----------
+ * Turns "2:00 PM on 8 March" into the exact moment in time the database stores, and back.
+ *
+ * The database keeps everything in UTC, which never shifts. People think in local time,
+ * which shifts twice a year for daylight saving. Converting between them is not a fixed
+ * offset — the offset depends on the very moment you are trying to work out, which is why
+ * the function below has to make two passes at it.
+ *
+ * Get this wrong and Michelle drives to a family's house an hour early.
+ */
+
+/**
  * Converting between the practice's wall clock and UTC.
  *
  * Michelle types "2:00 PM on 8 March". The database stores UTC. Between those two facts
