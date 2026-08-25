@@ -84,16 +84,20 @@ export function GetInTouch() {
           </li>
         </ul>
 
-        {contact.isPlaceholder && (
-          /*
-            Visible only in development — resolvePracticeContact throws in production
-            rather than rendering a placeholder, so this can never reach a real visitor.
-          */
-          <p className="mt-8 rounded-xl bg-sand/40 px-4 py-3 text-sm text-navy">
-            <strong>Development note:</strong> contact details are placeholders. Set
-            NEXT_PUBLIC_PRACTICE_PHONE and NEXT_PUBLIC_PRACTICE_EMAIL before launch.
-          </p>
-        )}
+        {/*
+          No "development note" banner.
+
+          An earlier version rendered one whenever contact details were placeholders. It
+          was reasoning about the wrong audience: the dev deployment is what gets shown to
+          people, and a yellow box about environment variables makes a finished page look
+          unfinished.
+
+          The control that matters is not a banner anyone can ignore — it is
+          resolvePracticeContact throwing at BUILD time when NEXT_PUBLIC_SITE_ENV is
+          "production" and the details are missing or still placeholders (D033). A
+          placeholder cannot reach a real visitor, because the build that would ship it
+          does not complete.
+        */}
       </div>
     </section>
   );

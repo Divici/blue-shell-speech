@@ -1,5 +1,6 @@
 import { ResponsiveImage, IMAGE_WIDTHS } from "@/components/ResponsiveImage";
 import { ABOUT, SERVICE_CHIPS } from "@/lib/site-content";
+import { SeaPlant } from "@/components/brand/SeaAccents";
 import {
   ChatIcon,
   PeopleIcon,
@@ -30,7 +31,11 @@ const CHIP_ICONS = {
  */
 export function MeetYourSLP() {
   return (
-    <section id="about" className="bg-white pb-[var(--spacing-section)]">
+    <section id="about" className="relative overflow-hidden bg-white pb-[var(--spacing-section)]">
+      <SeaPlant
+        size={150}
+        className="pointer-events-none absolute -right-8 bottom-0 hidden opacity-70 xl:block"
+      />
       <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)] lg:gap-16">
         <div className="relative mx-auto w-full max-w-sm lg:max-w-none">
           <div className="overflow-hidden rounded-[54%_46%_52%_48%/44%_50%_50%_56%] bg-ice shadow-[0_18px_50px_-26px_rgba(27,79,163,0.5)]">

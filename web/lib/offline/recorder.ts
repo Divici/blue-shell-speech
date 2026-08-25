@@ -104,12 +104,13 @@ export class DictationRecorder {
           autoGainControl: true,
         },
       });
-    } catch (error) {
+    } catch {
       /*
        * A denied microphone is a permission problem, not a bug.
        *
-       * Surfaced as a distinct message because the fix is in browser settings and no
-       * amount of retrying will help.
+       * The underlying error is deliberately not surfaced or logged: it varies by browser,
+       * says nothing a clinician can act on, and the actionable fact — the fix is in
+       * browser settings, and retrying will not help — is the same in every case.
        */
       this.callbacks.onError?.(
         new Error(

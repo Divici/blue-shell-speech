@@ -44,18 +44,25 @@ export function ShellMark({ size = 40, className, variant = "brand" }: ShellMark
         fillOpacity={bodyOpacity}
       />
 
-      {/* Ribs, fanning from the hinge to each scallop point. */}
+      {/*
+        Ribs, fanning from the hinge to each scallop point.
+
+        Weight and opacity are tuned for the size this is actually used at — 30–40px in
+        the header, where the mark has to read as a shell in a browser tab and next to a
+        wordmark. An earlier version used 1.8px at 40% opacity, which at 36px rendered as
+        a featureless blue blob: the ribs were technically present and visually absent.
+      */}
       <g
         stroke={ribs}
-        strokeOpacity={variant === "light" ? 0.85 : 0.4}
-        strokeWidth="1.8"
+        strokeOpacity={variant === "light" ? 0.9 : 0.75}
+        strokeWidth="2.6"
         strokeLinecap="round"
       >
-        <path d="M32 53V24" />
-        <path d="m26 52-5-22" />
-        <path d="m38 52 5-22" />
-        <path d="M20.5 48 13 33" />
-        <path d="M43.5 48 51 33" />
+        <path d="M32 52V22" />
+        <path d="m25 51-5-23" />
+        <path d="m39 51 5-23" />
+        <path d="M19 47 12 31" />
+        <path d="M45 47 52 31" />
       </g>
     </svg>
   );

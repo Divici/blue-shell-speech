@@ -3,6 +3,7 @@ import { ResponsiveImage, IMAGE_WIDTHS } from "@/components/ResponsiveImage";
 import { HERO, BADGES } from "@/lib/site-content";
 import { WaveDivider } from "@/components/brand/WaveDivider";
 import { Bubbles } from "@/components/brand/Bubbles";
+import { Starfish, CoralShell } from "@/components/brand/SeaAccents";
 import { ArrowRightIcon, HomeIcon, HeartCheckIcon, StarIcon } from "@/components/icons";
 
 const BADGE_ICONS = {
@@ -61,6 +62,15 @@ export function Hero() {
         </div>
 
         <div className="relative">
+          {/* Decorative, from comp 2. Hidden on small screens where space is the scarce thing. */}
+          <Starfish
+            size={54}
+            className="pointer-events-none absolute -top-2 -right-1 hidden rotate-12 lg:block"
+          />
+          <CoralShell
+            size={68}
+            className="pointer-events-none absolute bottom-10 left-2 hidden -rotate-12 lg:block"
+          />
           {/*
             The organic blob mask from the comps, as a border-radius rather than an SVG
             clip-path — it scales with the element, costs nothing to render, and degrades
