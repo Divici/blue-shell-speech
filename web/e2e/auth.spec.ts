@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { readdirSync } from "node:fs";
+import path from "node:path";
 
 /**
  * The authentication boundary.
@@ -104,50 +106,96 @@ test.describe("unauthenticated access", () => {
 });
 
 /**
- * The authenticated route group.
+ * Every page in the authenticated route group, DISCOVERED RATHER THAN LISTED.
  *
- * Every route under app/(app) inherits the layout's session check and force-dynamic. These
- * assert that inheritance actually holds — a new page added to the group must be
- * protected by existing there, not by remembering to add a guard.
+ * `app/(app)` is a route group: the parentheses do not appear in the URL, and every page
+ * inside inherits the layout's session check and `force-dynamic`. So the routes are a fact
+ * about the directory, and reading the directory is the only version of this that stays
+ * true. A dynamic segment becomes a synthetic identifier — a real-looking id must behave
+ * exactly like any other and reveal nothing about whether the record exists.
+ *
+ * IT WAS A HARD-CODED LIST OF SIX, under a comment claiming "a new page added to the group
+ * must be protected by existing there, not by remembering to add a guard" — while the test
+ * itself was a list somebody had to remember to extend. Three of the nine pages were
+ * covered by separate named tests, which is how the list stayed plausible. Same defect as
+ * the BFF timeout guard in `lib/api/timeouts.test.ts`, one tree over.
  */
+function routesInTheAuthenticatedGroup(): string[] {
+  const group = path.resolve(__dirname, "..", "app", "(app)");
+
+  function walk(directory: string, segments: string[]): string[] {
+    const found: string[] = [];
+
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        // Route groups are parentheses in the filesystem and nothing in the URL.
+        const segment = /^\(.*\)$/.test(entry.name)
+          ? segments
+          : [...segments, entry.name];
+
+        found.push(...walk(path.join(directory, entry.name), segment));
+        continue;
+      }
+
+      if (entry.name === "page.tsx") {
+        found.push(
+          "/" +
+            segments
+              .map((s) =>
+                /^\[.*\]$/.test(s) ? "11111111-1111-1111-1111-111111111111" : s,
+              )
+              .join("/"),
+        );
+      }
+    }
+
+    return found;
+  }
+
+  return walk(group, []).sort();
+}
+
 test.describe("patient routes are protected", () => {
-  const routes = [
-    "/dashboard",
-    "/patients",
-    "/patients/new",
-    "/today",
-    "/appointments/new",
-    "/enquiries",
-  ];
+  const routes = routesInTheAuthenticatedGroup();
 
-  // A note is the most sensitive page in the app: clinical observations about a child.
-  const noteRoute = "/notes/11111111-1111-1111-1111-111111111111";
+  /**
+   * The walk found the group, and found pages in it.
+   *
+   * A `for` loop over an empty array registers no tests and this file stays green, so a
+   * rename of `app/(app)` would delete this entire describe block silently — which is the
+   * failure mode being fixed, arriving by a different door. The floor is loose on purpose:
+   * an exact count would put the list back.
+   *
+   * Control: the `group` path — the walk reaching the whole route group.
+   * Narrowed to `app/(app)/patients` → red, "Routes found: /,
+   * /11111111-1111-1111-1111-111111111111, /new … expected 3 to be greater than 5", and
+   * the loop below silently registers three wrong routes instead of nine, which is what
+   * this assertion exists to make loud.
+   */
+  test("the authenticated group is discovered rather than listed", () => {
+    expect(routes.length, `Routes found: ${routes.join(", ")}`).toBeGreaterThan(5);
+  });
 
+  /**
+   * Control: the `if (!session) redirect("/login")` in `app/(app)/layout.tsx`.
+   * Replaced with `if (!session) return <>{children}</>` — rendering the protected page to
+   * a visitor with no session, which is the defect — → red on all nine, "expect(page)
+   * .toHaveURL(expected) failed", along with the standalone dashboard test above.
+   *
+   * Re-run because the test set changed shape (D077): it used to be six listed routes plus
+   * three named tests for the note, the enquiry and the patient record. All nine now come
+   * out of the walk, and all nine went red on the one deletion.
+   */
   for (const route of routes) {
     test(`${route} redirects to sign-in without a session`, async ({ page }) => {
+      // A clinical note and a patient record are the most sensitive pages here —
+      // observations about a child, and a parent's account of their difficulties — and
+      // they are covered by this loop rather than by tests of their own, because being
+      // inside the group IS the protection under test.
       await page.goto(route);
       await expect(page).toHaveURL(/\/login$/);
     });
   }
-
-  test("a clinical note is unreachable without a session", async ({ page }) => {
-    await page.goto(noteRoute);
-    await expect(page).toHaveURL(/\/login$/);
-  });
-
-  test("a consultation enquiry is unreachable without a session", async ({ page }) => {
-    // A parent's account of their child's difficulties. Not PHI by the regulation's
-    // definition, and protected exactly like it — see ConsultationRequest.
-    await page.goto("/enquiries/11111111-1111-1111-1111-111111111111");
-    await expect(page).toHaveURL(/\/login$/);
-  });
-
-  test("a patient record is unreachable without a session", async ({ page }) => {
-    // A real-looking identifier must behave exactly like any other: redirect, reveal
-    // nothing about whether it exists.
-    await page.goto("/patients/11111111-1111-1111-1111-111111111111");
-    await expect(page).toHaveURL(/\/login$/);
-  });
 
   test("no PHI-bearing route is cacheable", async ({ page }) => {
     for (const route of routes) {

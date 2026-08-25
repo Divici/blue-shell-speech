@@ -4,36 +4,48 @@
  * THE TIER THAT GIVES UP FIRST DECIDES THE BOUND. That is the whole reason this file
  * exists as a shared constant rather than a literal per client.
  *
- * The API sets its own ceiling on a request, and derives it from the retry policy
- * underneath: `DatabaseTimeouts.Request` in
- * `api/src/Practice.Infrastructure/Persistence/DatabaseTimeouts.cs` is the worst case the
- * retry policy can produce (six attempts of thirty seconds, plus five backoffs of up to
- * ten) plus one command of grace — 4 minutes 20 seconds. Past that the API answers 504
- * itself, and the answer arrives here as an ordinary failure.
+ * So this number has to sit above the API's CEILING — the longest that tier can take
+ * before answering. `DatabaseTimeouts.Ceiling` in
+ * `api/src/Practice.Infrastructure/Persistence/DatabaseTimeouts.cs` is 11 minutes 50
+ * seconds, and it is the sum of two bounds rather than one:
  *
- * So this number sits ABOVE that one. A shorter timeout on this side would not bound the
- * work; it would replace every number on `DatabaseTimeouts` with this one, silently,
- * including the retry budget that exists so Michelle's first request of the day survives
- * an auto-paused Azure SQL. `RequestBoundsTests.The_bff_waits_longer_than_this_api_is_
- * prepared_to_spend` reads this file and fails if either side moves past the other.
+ *   * `DatabaseTimeouts.Request`, 10m20s, which bounds everything that observes a
+ *     cancellation token. It is derived from the retry policy underneath — six attempts of
+ *     three commands of thirty seconds, plus five backoffs of up to ten — because those
+ *     retries are what carry Michelle's first request of the day through an auto-paused
+ *     Azure SQL, and a bound below them deletes the recovery.
+ *   * `DatabaseTimeouts.UncancellableGrace`, 90s, which bounds everything that
+ *     deliberately does not observe one. Audit writes hold no request token by design, and
+ *     ASP.NET Core's request timeout CANCELS the request and then waits for the pipeline —
+ *     so an uncancellable write runs on past that bound and ADDS to it. The two compose;
+ *     they do not nest.
  *
- * WHAT IT IS FOR, THEN, IF THE API BOUNDS ITSELF. The case where no answer comes at all:
- * a connection accepted and never answered, a replica torn down mid-request, ingress
- * holding a socket open. Without a signal, `fetch` in Node waits indefinitely and takes a
- * server-action render with it. Five of the six clients here had no signal at all, which
- * is the defect this replaces; the sixth had 25 seconds, which was worse in its own way —
- * it reported "your enquiry was not stored" to a parent whose row the API went on to
- * commit a minute later, on a form whose own comment says there is deliberately no retry
- * because a POST that timed out may well have succeeded.
+ * The earlier version of this comment described only the first of those and called it the
+ * ceiling. It was wrong by four minutes in the direction that matters: this constant was
+ * 300_000, under the API's real worst case, so the BFF could give up on a request the API
+ * went on to answer — which on the consultation form means telling a parent "your enquiry
+ * was not stored" about an enquiry that was.
+ * `RequestBoundsTests.The_bff_waits_longer_than_this_api_is_prepared_to_spend` reads this
+ * file and compares it with the ceiling, and
+ * `RequestBoundsTests.The_ceiling_is_the_request_bound_plus_the_uncancellable_tail`
+ * measures that the ceiling is real.
  *
- * Five minutes, which is that ceiling plus forty seconds. The margin is for the hop
- * itself: Container Apps ingress QUEUES a request while a replica wakes rather than
- * refusing it (docs/PERFORMANCE.md measures a ~22 s cold start), so the time on the wire
- * is not free. Anything upstream of this — ingress, a browser, a load balancer — has
- * bounds of its own that this repository has not measured, and they are deliberately not
- * described here: a number nobody has checked reads as a decision and is not one (D072).
+ * WHAT IT IS FOR, THEN, IF THE API BOUNDS ITSELF. The case where no answer comes at all: a
+ * connection accepted and never answered, a replica torn down mid-request, ingress holding
+ * a socket open. Without a signal, `fetch` in Node waits indefinitely and takes a
+ * server-action render with it.
+ *
+ * TWELVE AND A HALF MINUTES IS A LONG SPINNER AND THAT IS A REAL COST, recorded rather
+ * than hidden: it is the honest consequence of a retry budget sized for a scale-to-zero
+ * database, and every alternative considered is in DECISIONS.md D090. The margin over the
+ * ceiling is for the hop itself — Container Apps ingress QUEUES a request while a replica
+ * wakes rather than refusing it (docs/PERFORMANCE.md measures a ~22 s cold start), so the
+ * time on the wire is not free. Anything upstream of this — ingress, a browser, a load
+ * balancer — has bounds of its own that this repository has not measured, and they are
+ * deliberately not described here: a number nobody has checked reads as a decision and is
+ * not one (D072).
  */
-export const API_TIMEOUT_MS = 300_000;
+export const API_TIMEOUT_MS = 750_000;
 
 /**
  * A fresh timeout signal for one request.
@@ -45,7 +57,7 @@ export const API_TIMEOUT_MS = 300_000;
  *
  * Called per request, never hoisted to a module-level constant: a signal is single-use and
  * starts counting the moment it is created, so a shared one would abort every request made
- * after the first five minutes of the process's life.
+ * after the first twelve minutes of the process's life.
  */
 export function apiSignal(): AbortSignal {
   return AbortSignal.timeout(API_TIMEOUT_MS);

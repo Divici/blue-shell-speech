@@ -77,19 +77,39 @@ public sealed class ArchitectureTests
     /// This is what keeps ITranscriptionService and IClinicalNoteGenerationService
     /// swappable (presearch §8.1). If Application could reference Infrastructure,
     /// "change the AI vendor" would stop being a configuration change.
+    ///
+    /// AN ALLOWLIST, NOT A DENYLIST, and that is a correction rather than a preference.
+    /// This asserted against <c>["Practice.Infrastructure", "Practice.Api"]</c> — the two
+    /// projects that existed when it was written — so a reference to anything ADDED later
+    /// would pass. That is the same defect as a test enumerating the files it means to
+    /// cover: a list is only complete on the day somebody writes it. Practice.Domain.Tests
+    /// already had the safe shape one layer down
+    /// (<c>Domain_depends_only_on_the_base_class_library</c> makes its own forbidden-prefix
+    /// list redundant), and this project did not.
+    ///
+    /// Control: the <c>permitted</c> allowlist — that is, the shape of the check.
+    /// A <c>ProjectReference</c> to Practice.Domain.Tests added to
+    /// Practice.Application.csproj → red, "Practice.Application may reference
+    /// Practice.Domain and nothing else — not Practice.Infrastructure, not Practice.Api,
+    /// and not a project that did not exist when this test was written. Found:
+    /// Practice.Domain.Tests". The denylist version this replaces stays GREEN on exactly
+    /// that reference, which is the whole finding: a nonsense dependency, declared, and a
+    /// guard that shrugs.
     /// </summary>
     [Fact]
-    public void Application_does_not_reference_infrastructure_or_the_web_host()
+    public void Application_references_nothing_but_the_domain()
     {
-        string[] forbidden = ["Practice.Infrastructure", "Practice.Api"];
+        string[] permitted = ["Practice.Domain"];
 
         var violations = ProjectReferencesOf("Practice.Application")
-            .Where(forbidden.Contains)
+            .Where(name => !permitted.Contains(name))
             .ToArray();
 
         Assert.True(
             violations.Length == 0,
-            $"Practice.Application must not reference: {string.Join(", ", violations)}");
+            "Practice.Application may reference Practice.Domain and nothing else — not "
+            + "Practice.Infrastructure, not Practice.Api, and not a project that did not "
+            + $"exist when this test was written. Found: {string.Join(", ", violations)}");
     }
 
     [Fact]

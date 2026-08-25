@@ -1765,9 +1765,13 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// holding the pen.
     /// </summary>
     private sealed class DropsTheConnectionThenWrites(
-        PracticeDbContext db, IHttpContextAccessor http) : IAuditWriter
+        PracticeDbContext db, IHttpContextAccessor http, UncancellableWriteDeadline deadline)
+        : IAuditWriter
     {
-        private readonly AuditWriter _real = new(db);
+        // The application's own writer, on the application's own deadline. Substituting a
+        // fresh unbound deadline here would quietly restore the pre-fix behaviour and this
+        // test would go on passing while proving less.
+        private readonly AuditWriter _real = new(db, deadline);
 
         public Task WriteAsync(AuditEvent auditEvent)
         {
@@ -1803,11 +1807,17 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// cannot distinguish "not yours" from "never existed" (D052), so the audit row is the
     /// only place that attempt is recorded at all.
     ///
-    /// Control: IAuditWriter.WriteAsync — the absence of a CancellationToken parameter,
-    /// with AuditWriter saving on CancellationToken.None.
-    /// Deleted (the parameter restored and the endpoint's ct threaded back through
-    /// AuditRefusedDiscardAsync into SaveChangesAsync, the shape before this commit) → red
-    /// on the first assertion, "Assert.Single() Failure: The collection was empty".
+    /// Control: UncancellableWriteDeadline.BindTo starting a GRACE rather than cancelling.
+    /// Changed to `_expiry.Cancel()` on the request token — which is what "the audit write
+    /// observes the caller's cancellation" means once the write is on a deadline rather
+    /// than on CancellationToken.None — → red on the first assertion, "Assert.Single()
+    /// Failure: The collection was empty".
+    ///
+    /// Re-run because the mechanism moved (D077). The line used to name the absence of a
+    /// CancellationToken parameter on IAuditWriter.WriteAsync, with AuditWriter saving on
+    /// CancellationToken.None; the parameter is still absent and the save is still not the
+    /// caller's, but None was replaced by a bounded per-request deadline in D090, so the
+    /// deletion that isolates this property is now the one above.
     /// </summary>
     [Fact]
     public async Task A_refused_discard_is_audited_even_when_the_caller_disconnects()
@@ -1878,11 +1888,14 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// caller who disconnects has still read the record — and the row saying so was the
     /// thing being abandoned.
     ///
-    /// Control: IAuditWriter.WriteAsync — the absence of a CancellationToken parameter,
-    /// with AuditWriter saving on CancellationToken.None.
-    /// Deleted (the parameter restored and GetNoteHistory's ct threaded into
-    /// SaveChangesAsync) → red on Assert.Single, "Assert.Single() Failure: The collection
-    /// was empty".
+    /// Control: UncancellableWriteDeadline.BindTo starting a GRACE rather than cancelling.
+    /// Changed to `_expiry.Cancel()` on the request token → red on Assert.Single,
+    /// "Assert.Single() Failure: The collection was empty".
+    ///
+    /// Re-run for the reason given on the sibling above: the property is unchanged and the
+    /// mechanism holding it is not (D077, D090). Both tests were re-run against the same
+    /// single-line change, which is what makes this a class rather than a case in the
+    /// direction that matters — one deletion, two endpoints, two reds.
     /// </summary>
     [Fact]
     public async Task A_note_read_is_audited_even_when_the_caller_disconnects()

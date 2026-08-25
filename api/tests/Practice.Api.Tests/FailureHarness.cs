@@ -269,6 +269,182 @@ internal sealed class FailsEveryCommit : DbTransactionInterceptor
 }
 
 /// <summary>
+/// What one attempt of a transaction actually costs the database, counted rather than
+/// assumed.
+///
+/// DatabaseTimeouts.RetryBudgetFor multiplies a command timeout by the number of commands
+/// ONE ATTEMPT issues, and for two rounds that number was 1 while the discard's body
+/// issued three. Nothing noticed, because a test that asserts an inequality between two
+/// constants proves the constants and not the system. This is what the constant is checked
+/// against: the commands EF really executes between a transaction starting and it ending.
+///
+/// A PAIR OF CLASSES SHARING STATE, because EF's interception surface is two base classes
+/// — DbCommandInterceptor and DbTransactionInterceptor — and a type can only inherit one.
+/// Implementing the interfaces directly would mean writing every member of both.
+///
+/// ARMED EXPLICITLY, for the reason the other interceptors here are: the host, the
+/// identity stores and the seeding requests all issue statements on their own account, and
+/// a counter running from construction would be watching somebody else's.
+/// </summary>
+internal sealed class CommandsPerTransaction
+{
+    private readonly List<int> _closed = [];
+    private int _open = -1;
+
+    /// <summary>Starts watching. Call it immediately before the request under test.</summary>
+    public bool Armed { get; private set; }
+
+    public void Arm() => Armed = true;
+
+    /// <summary>
+    /// One entry per transaction that opened and closed while armed, in order. A test
+    /// asserting Single() on this is also asserting that the request opened exactly one
+    /// transaction, which is worth having: a second one would mean the discard had stopped
+    /// being atomic without anything else going red.
+    /// </summary>
+    public IReadOnlyList<int> Counts => _closed;
+
+    public void TransactionOpened()
+    {
+        if (Armed) _open = 0;
+    }
+
+    public void CommandExecuted()
+    {
+        if (Armed && _open >= 0) _open++;
+    }
+
+    public void TransactionClosed()
+    {
+        if (!Armed || _open < 0) return;
+
+        _closed.Add(_open);
+        _open = -1;
+    }
+}
+
+/// <inheritdoc cref="CommandsPerTransaction"/>
+internal sealed class CountsCommandsInATransaction(CommandsPerTransaction tally)
+    : DbCommandInterceptor
+{
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        tally.CommandExecuted();
+        return ValueTask.FromResult(result);
+    }
+
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        tally.CommandExecuted();
+        return ValueTask.FromResult(result);
+    }
+
+    public override ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<object> result,
+        CancellationToken cancellationToken = default)
+    {
+        tally.CommandExecuted();
+        return ValueTask.FromResult(result);
+    }
+}
+
+/// <inheritdoc cref="CommandsPerTransaction"/>
+internal sealed class MarksTransactionBoundaries(CommandsPerTransaction tally)
+    : DbTransactionInterceptor
+{
+    public override ValueTask<DbTransaction> TransactionStartedAsync(
+        DbConnection connection,
+        TransactionEndEventData eventData,
+        DbTransaction result,
+        CancellationToken cancellationToken = default)
+    {
+        tally.TransactionOpened();
+        return ValueTask.FromResult(result);
+    }
+
+    public override Task TransactionCommittedAsync(
+        DbTransaction transaction,
+        TransactionEndEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+        tally.TransactionClosed();
+        return Task.CompletedTask;
+    }
+
+    public override Task TransactionRolledBackAsync(
+        DbTransaction transaction,
+        TransactionEndEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+        tally.TransactionClosed();
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Makes every statement against ONE table hang, on whatever token EF handed the command.
+///
+/// The token is the point. DelaysEveryRead below stalls everything and therefore only ever
+/// demonstrates the cancellable half; this one is aimed at a table whose writes
+/// deliberately run on a token of their own, so the stall is only cut short by the bound
+/// that is actually under test. Pointed at AuditEvents it reproduces the exact shape of
+/// the finding: the reads before it complete normally, the request bound fires, and the
+/// uncancellable INSERT is still going.
+///
+/// The stall stands in for a command that consumes its whole timeout. A real one cannot be
+/// produced on demand — a wedged database is not something a test can arrange — and what
+/// is under test is what bounds the wait, not what caused it.
+/// </summary>
+internal sealed class StallsEveryStatementAgainst(string table, TimeSpan stall)
+    : DbCommandInterceptor
+{
+    public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        await StallIfItTouchesTheTableAsync(command, cancellationToken);
+        return result;
+    }
+
+    public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        await StallIfItTouchesTheTableAsync(command, cancellationToken);
+        return result;
+    }
+
+    public override async ValueTask<InterceptionResult<object>> ScalarExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<object> result,
+        CancellationToken cancellationToken = default)
+    {
+        await StallIfItTouchesTheTableAsync(command, cancellationToken);
+        return result;
+    }
+
+    private Task StallIfItTouchesTheTableAsync(DbCommand command, CancellationToken ct) =>
+        command.CommandText.Contains($"[{table}]", StringComparison.Ordinal)
+            ? Task.Delay(stall, ct)
+            : Task.CompletedTask;
+}
+
+/// <summary>
 /// Makes every read take longer than the caller is willing to wait.
 ///
 /// A request timeout is only observable on a request that is slow, and nothing this
@@ -317,26 +493,48 @@ internal static class FailureHarness
     /// have an opinion. This one is for the test that asks whether the request bound
     /// contains the retry budget, which is a question about the wait and nothing else.
     ///
-    /// It restates production's command timeout for the same reason
-    /// <see cref="With"/> does: AddDbContext uses TryAdd, so the options have to be
-    /// replaced wholesale rather than added to.
+    /// THE COMMAND TIMEOUT IS A PARAMETER, and that is a fix rather than tidying. It used
+    /// to be pinned at production's thirty seconds while the caller scaled every other
+    /// term down to milliseconds and derived a request bound from ITS OWN number. The
+    /// derived bound was therefore built on a command timeout the running application did
+    /// not have, so the command term — the term that was wrong — could not affect the
+    /// outcome at any value. A test cannot exercise an error it has configured away.
     /// </summary>
     public static void RetriesAfterAMeasurableWait(
-        string connectionString, IServiceCollection services, int retries, TimeSpan backoff)
+        string connectionString, IServiceCollection services,
+        int retries, TimeSpan backoff, TimeSpan commandTimeout,
+        params IInterceptor[] interceptors)
     {
         services.RemoveAll<DbContextOptions<PracticeDbContext>>();
         services.RemoveAll<DbContextOptions>();
 
-        services.AddDbContext<PracticeDbContext>(options =>
-            options.UseSqlServer(connectionString, sql =>
+        services.AddDbContext<PracticeDbContext>(options => options
+            .UseSqlServer(connectionString, sql =>
             {
                 sql.ExecutionStrategy(
                     deps => new SlowlyRetryingExecutionStrategy(deps, retries, backoff));
-                sql.CommandTimeout(DatabaseTimeouts.CommandSeconds);
-            }));
+                sql.CommandTimeout((int)commandTimeout.TotalSeconds);
+            })
+            .AddInterceptors(interceptors));
 
         services.AddScoped<IAuditWriter, BlipsOnceAuditWriter>();
     }
+
+    /// <summary>
+    /// The uncancellable-write deadline, scaled down so a test can wait for it.
+    ///
+    /// Production's is eleven minutes and fifty seconds; nothing can be measured against
+    /// that.
+    ///
+    /// THE TWO ARGUMENTS ARE SEPARATE ON PURPOSE. In production the construction ceiling
+    /// IS the request bound plus the grace, so deleting the middleware's BindTo leaves the
+    /// same number by a different route and nothing goes red. A test that wants the
+    /// binding to be the control has to make the fallback distinguishable, so it passes a
+    /// deliberately distant backstop and asserts against the bound plus the grace.
+    /// </summary>
+    public static void BoundedBy(
+        IServiceCollection services, TimeSpan backstop, TimeSpan grace) =>
+        services.AddScoped(_ => new UncancellableWriteDeadline(backstop, grace));
 
     /// <summary>
     /// Registers an interceptor on the application's own DbContext.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 vi.mock("server-only", () => ({}));
@@ -75,10 +75,13 @@ describe("apiSignal", () => {
   /**
    * The number itself is asserted from the API side —
    * `RequestBoundsTests.The_bff_waits_longer_than_this_api_is_prepared_to_spend` reads this
-   * module and compares it with `DatabaseTimeouts.Request`. Repeating that comparison here
-   * would restate one of the two constants, which is the shape of the defect this whole
-   * task is about. What is worth pinning on this side is that the value is a real duration
-   * and not, say, seconds mistaken for milliseconds.
+   * module and compares it with `DatabaseTimeouts.Ceiling`, which is the request bound plus
+   * the uncancellable tail rather than the request bound alone. That comparison used to be
+   * against the request bound, which is how this constant came to sit four minutes under
+   * the API's real worst case. Repeating it here would restate one of the two constants,
+   * which is the shape of the defect this whole task is about. What is worth pinning on
+   * this side is that the value is a real duration and not, say, seconds mistaken for
+   * milliseconds.
    */
   it("is measured in milliseconds and is minutes rather than seconds", () => {
     expect(API_TIMEOUT_MS).toBeGreaterThan(60_000);
@@ -91,6 +94,14 @@ describe("apiSignal", () => {
  * A single test through one client would have been just as green while the other five went
  * unbounded — which is precisely what happened. Each of these names the client whose fetch
  * it drives.
+ *
+ * THIS LIST IS NOT THE GUARD, and used to be treated as one. These are behavioural: they
+ * call the client and inspect what reached `fetch`, which is worth having and is the only
+ * thing that can catch a signal that is constructed and then not passed. What they cannot
+ * do is notice a module nobody added — `lib/api/enquiries.ts` arrived and no list here
+ * grew. The walk at the bottom of this file is what covers the set; the block below covers
+ * the behaviour. (`enquiries.ts` asserts its own bound in `enquiries.test.ts`, next to the
+ * rest of its contract.)
  */
 describe("every BFF fetch carries the API timeout", () => {
   /**
@@ -217,42 +228,127 @@ describe("every BFF fetch carries the API timeout", () => {
 });
 
 /**
- * THE SEVENTH CALL SITE, which does not exist yet.
+ * THE CALL SITE THAT DOES NOT EXIST YET.
  *
- * The tests above drive the six clients there are today, and a seventh added tomorrow
- * would leave them all green. This one counts instead: every `fetch(` in a module that
- * talks to the API must be accompanied by an `apiSignal()`, so a new call arrives bounded
- * or arrives red. Same argument as the API's wire-format test matching every property
- * ending in `Utc` rather than a list somebody remembered to extend (D072).
+ * The tests above drive the seven fetches there are today. An eighth added tomorrow would
+ * leave every one of them green, so this block does not name any: it WALKS THE TREE, finds
+ * every module that calls `fetch`, and requires each call to carry both bounds. A new
+ * client arrives covered or arrives red.
  *
- * Control: any `signal: apiSignal()` in the files listed below.
- * Deleted from notes.ts → red, "AssertionError: web/lib/api/notes.ts makes 1 call(s) to
- * fetch and passes apiSignal() 0 time(s)".
+ * IT USED TO BE A HARD-CODED LIST OF FIVE PATHS while its own comment claimed a new call
+ * site "arrives bounded or arrives red". It did not: `lib/api/enquiries.ts` shipped in the
+ * consultation-inbox work, was never added to the list, and was checked by nothing on
+ * either side of the boundary — the API's cross-tree test reads only the constant and
+ * never looks at a call site. It happened to be written correctly, which is the worst way
+ * to find out a guard is not guarding. Same argument as the API's wire-format test
+ * matching every property ending in `Utc` rather than a list somebody remembered to extend
+ * (D072).
+ *
+ * BOTH BOUNDS, because the same hole had two things falling through it. `cache: "no-store"`
+ * is ranked #1 in docs/THREAT_MODEL.md and had NO cross-file guard at all — only per-file
+ * assertions in two of the seven modules' own test files, which is the same defect one
+ * layer down.
+ *
+ * Control: any `signal: apiSignal()` in a module this walk finds.
+ * Deleted from notes.ts → red, "AssertionError: web/lib/api/notes.ts calls fetch 1 time(s),
+ * passes apiSignal() 0 time(s) and sets cache: no-store 1 time(s). An unbounded call to
+ * the API is a request this tier will wait on forever; a cacheable one is patient data in
+ * a shared cache."
+ *
+ * Control: any `cache: "no-store"` in a module this walk finds.
+ * Deleted from patients.ts → red, same sentence with "calls fetch 1 time(s), passes
+ * apiSignal() 1 time(s) and sets cache: no-store 0 time(s)".
+ *
+ * Control: the walk reaching outside this directory.
+ * `SEARCH_ROOTS` reduced to `["lib/api"]` → red on "walks the tree rather than a list",
+ * "AssertionError: Only 7 source file(s) found under lib/api. The walk is not reaching
+ * this app's code.: expected 7 to be greater than 20" — and `lib/auth/api-client.ts`
+ * silently drops out of the run, which is why that floor assertion exists at all and why
+ * the discovered list is printed on every failure below.
  */
-describe("the count of fetches and the count of timeouts", () => {
-  const CLIENTS = [
-    "lib/api/notes.ts",
-    "lib/api/patients.ts",
-    "lib/api/schedule.ts",
-    "lib/api/consultations.ts",
-    "lib/auth/api-client.ts",
-  ];
+describe("the count of fetches and the count of bounds", () => {
+  /*
+   * Every tree this app writes network code in. `app` is here as well as `lib` because a
+   * server action or a route handler can call the API directly, and one that did would sit
+   * outside a walk that only knew about the client modules.
+   */
+  const SEARCH_ROOTS = ["lib", "app"];
 
-  it.each(CLIENTS)("%s bounds every call it makes", (relative) => {
-    const source = readFileSync(
-      path.resolve(__dirname, "..", "..", relative),
-      "utf8",
-    );
+  const WEB_ROOT = path.resolve(__dirname, "..", "..");
 
-    const fetches = source.match(/\bfetch\(/g)?.length ?? 0;
-    const signals = source.match(/signal:\s*apiSignal\(\)/g)?.length ?? 0;
+  /** Build output and dependencies, which are neither this repo's code nor small. */
+  const SKIP_DIRECTORIES = new Set(["node_modules", ".next"]);
 
-    expect(fetches).toBeGreaterThan(0);
+  function sourceFilesUnder(directory: string): string[] {
+    const found: string[] = [];
+
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRECTORIES.has(entry.name)) found.push(...sourceFilesUnder(full));
+        continue;
+      }
+
+      // Test files are excluded: they mock `fetch` rather than calling the API, so a
+      // `fetch(` in one is a stand-in and not a call site.
+      if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.(ts|tsx)$/.test(entry.name)) {
+        found.push(full);
+      }
+    }
+
+    return found;
+  }
+
+  const scanned = SEARCH_ROOTS.flatMap((root) =>
+    sourceFilesUnder(path.join(WEB_ROOT, root)),
+  );
+
+  const clients = scanned
+    .map((file) => ({
+      relative: path.relative(WEB_ROOT, file).split(path.sep).join("/"),
+      source: readFileSync(file, "utf8"),
+    }))
+    .filter(({ source }) => /\bfetch\(/.test(source));
+
+  /**
+   * The walk found something, and found a lot of it.
+   *
+   * An `it.each` over an empty array registers no tests and the file stays green, so a
+   * rename that broke the walk would delete this guard silently — which is the exact
+   * failure mode being fixed. Both floors are deliberately loose: naming a count would put
+   * a list back, one layer along.
+   */
+  it("walks the tree rather than a list", () => {
     expect(
-      signals,
-      `web/${relative} makes ${fetches} call(s) to fetch and passes apiSignal() ` +
-        `${signals} time(s). An unbounded call to the API is a request this tier will ` +
-        `wait on forever.`,
-    ).toBe(fetches);
+      scanned.length,
+      `Only ${scanned.length} source file(s) found under ${SEARCH_ROOTS.join(", ")}. ` +
+        `The walk is not reaching this app's code.`,
+    ).toBeGreaterThan(20);
+
+    expect(
+      clients.length,
+      `No module calling fetch was found under ${SEARCH_ROOTS.join(", ")}. Either this ` +
+        `tier stopped talking to the API or the walk stopped working.`,
+    ).toBeGreaterThan(0);
   });
+
+  it.each(clients.map((client) => [client.relative, client.source] as const))(
+    "%s bounds every call it makes",
+    (relative, source) => {
+      const fetches = source.match(/\bfetch\(/g)?.length ?? 0;
+      const signals = source.match(/signal:\s*apiSignal\(\)/g)?.length ?? 0;
+      const noStore = source.match(/cache:\s*"no-store"/g)?.length ?? 0;
+
+      const complaint =
+        `web/${relative} calls fetch ${fetches} time(s), passes apiSignal() ` +
+        `${signals} time(s) and sets cache: no-store ${noStore} time(s). An unbounded ` +
+        `call to the API is a request this tier will wait on forever; a cacheable one ` +
+        `is patient data in a shared cache. Modules found by the walk: ` +
+        `${clients.map((c) => c.relative).join(", ")}.`;
+
+      expect(signals, complaint).toBe(fetches);
+      expect(noStore, complaint).toBe(fetches);
+    },
+  );
 });

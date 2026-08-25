@@ -76,11 +76,17 @@ builder.Services.AddInfrastructure(
  * from that budget now, and a test reads the command timeout, the retry policy and this
  * value off the running application and fails if the relationship is ever inverted again.
  *
- * It bounds what can be abandoned and nothing else. Cancelling RequestAborted stops reads
- * and stops a transaction body before its commit; it does NOT stop an audit write, which
- * deliberately holds no token (D075). That asymmetry is the design: an audit row that
- * vanishes when a phone locks is not an audit row, and what bounds THAT is
- * DatabaseTimeouts.RetryBudget.
+ * IT IS NOT THE CEILING ON A REQUEST, AND CALLING IT ONE WAS THE SECOND DEFECT HERE.
+ * RequestTimeoutsMiddleware cancels RequestAborted and then AWAITS the pipeline, so it
+ * bounds work that observes a token and nothing else. Audit writes deliberately observe
+ * none (D075) — an audit row that vanishes when a phone locks is not an audit row — so
+ * they ran on PAST this bound and ADDED to it. The two do not nest; they compose.
+ *
+ * So the uncancellable half has a bound of its own now: UncancellableWriteDeadline, bound
+ * to RequestAborted by ProviderContextMiddleware, expiring one shared
+ * DatabaseTimeouts.UncancellableGrace after this policy fires. This value plus that grace
+ * is DatabaseTimeouts.Ceiling, which is the number the BFF has to sit above — and
+ * RequestBoundsTests measures it on a real DELETE rather than deriving it.
  *
  * The middleware goes in below, immediately after the exception handler. Options without
  * it would be the D072 defect exactly — configuration present, control absent, and

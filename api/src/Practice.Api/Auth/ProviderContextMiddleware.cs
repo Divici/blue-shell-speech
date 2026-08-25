@@ -16,8 +16,26 @@ public sealed class ProviderContextMiddleware(RequestDelegate next)
     public async Task InvokeAsync(
         HttpContext context,
         IProviderContext providerContext,
-        PracticeDbContext db)
+        PracticeDbContext db,
+        UncancellableWriteDeadline deadline)
     {
+        /*
+         * FIRST, before this middleware issues a query of its own.
+         *
+         * This is the first application middleware — UseExceptionHandler and
+         * UseRequestTimeouts are the only things above it — so binding here means every
+         * audit write in the request is bounded, including one written by an endpoint
+         * that never reads a note. context.RequestAborted is already the token
+         * RequestTimeouts substituted, so this binds to the request bound firing and to a
+         * genuine client disconnect alike: both mean the caller is gone and the
+         * uncancellable remainder has a grace period, not forever.
+         *
+         * Without it the deadline falls back to its own ceiling from construction, which
+         * is safe but is a bound on the wrong clock. RequestBoundsTests
+         * .The_ceiling_is_the_request_bound_plus_the_uncancellable_tail is what notices.
+         */
+        deadline.BindTo(context.RequestAborted);
+
         var header = context.Request.Headers[RequestProviderContext.HeaderName].ToString();
 
         if (!string.IsNullOrWhiteSpace(header)

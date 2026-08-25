@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Globalization;
 using System.Net.Http.Json;
@@ -73,10 +74,12 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
     /// Control: the <c>DefaultPolicy</c> assignment inside <c>AddRequestTimeouts</c> in
     /// Program.cs.
     /// Deleted — <c>AddRequestTimeouts()</c> left in place with no configuration — → red,
-    /// "Assert.Equal() Failure: Values differ, Expected: 00:04:20, Actual: null". Re-run
-    /// after the bound stopped being a chosen number and became one derived from the retry
-    /// budget (D086); the quoted value moved with it, which is the sort of drift a
-    /// `Control:` line is meant to make visible.
+    /// "Assert.Equal() Failure: Values differ, Expected: 00:10:20, Actual: null". Re-run
+    /// twice now: once when the bound stopped being a chosen number and became one derived
+    /// from the retry budget (D086), and again when that budget stopped modelling one
+    /// command per attempt (D090). The quoted value moved both times — 00:00:30, then
+    /// 00:04:20, now 00:10:20 — which is exactly the drift a `Control:` line is meant to
+    /// make visible, and the reason D077 makes re-running it part of the change.
     ///
     /// The POLICY is the control, not the registration: deleting <c>AddRequestTimeouts</c>
     /// outright takes the whole application down — "Unable to resolve service for type
@@ -153,6 +156,63 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
      */
 
     /// <summary>
+    /// ONE ATTEMPT OF THE DISCARD ISSUES THIS MANY COMMANDS — counted, on a real DELETE,
+    /// against a real database.
+    ///
+    /// This is the term two rounds of this fix got wrong. <c>RetryBudgetFor</c> multiplied
+    /// a command timeout by the number of ATTEMPTS and stopped there, which models one
+    /// command per attempt; the discard's transaction body issues a SELECT, a DELETE and
+    /// an audit INSERT, so the budget was short by a factor of three and the request bound
+    /// derived from it cancelled retries it claimed to contain. Nothing went red, because
+    /// the test guarding it compared two constants — and two constants agree with each
+    /// other whatever the system does.
+    ///
+    /// So the number is measured rather than read off the code. The interceptors count
+    /// what EF executes between the transaction opening and it closing, which is exactly
+    /// the unit the execution strategy retries; a body that grows a fourth statement makes
+    /// this fail rather than making the budget quietly wrong.
+    ///
+    /// <c>Assert.Single</c> on the tally is a second claim worth having: the discard opens
+    /// ONE transaction. Two would mean it had stopped being atomic with nothing else
+    /// noticing.
+    ///
+    /// Control: <c>DatabaseTimeouts.DiscardCommandsPerAttempt</c>, the value 3.
+    /// Set to 1 — the model this replaces — → red, "One attempt of the discard's
+    /// transaction executed 3 command(s); DatabaseTimeouts.DiscardCommandsPerAttempt says
+    /// 1. The retry budget multiplies a command timeout by this number, so a model that is
+    /// short by a factor makes the request bound cancel retries it claims to contain."
+    /// </summary>
+    [Fact]
+    public async Task The_discard_issues_the_commands_the_budget_models()
+    {
+        var providerPublicId = await SeedProviderAsync();
+
+        var tally = new CommandsPerTransaction();
+
+        using var counted = new PracticeApiFactory(sql.ConnectionString,
+            FailureHarness.With(
+                sql.ConnectionString,
+                new CountsCommandsInATransaction(tally),
+                new MarksTransactionBoundaries(tally)));
+
+        using var client = ClientFor(counted, providerPublicId);
+
+        // Seeded through the SAME factory — the counter is disarmed until the line below,
+        // so none of this setup is counted, and arming after it means the two reads and
+        // the write that are counted are the ones the DELETE performs.
+        var draft = await SeedEmptyDraftAsync(client);
+
+        tally.Arm();
+
+        using var response = await client.DeleteAsync($"/notes/{draft}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var inTheTransaction = Assert.Single(tally.Counts);
+
+        Assert.Equal(DatabaseTimeouts.DiscardCommandsPerAttempt, inTheTransaction);
+    }
+
+    /// <summary>
     /// The request bound is longer than the longest run the retry policy can produce.
     ///
     /// Every term is read off the RUNNING application — the command timeout from the
@@ -162,18 +222,35 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
     /// (D042 finding #2, and the reason <see cref="Every_database_command_is_bounded"/>
     /// reads the context instead of DatabaseTimeouts).
     ///
+    /// The fourth term, the commands one attempt issues, cannot be read off a running
+    /// application: it is a property of the endpoint's body rather than of a setting. It
+    /// is measured instead, by
+    /// <see cref="The_discard_issues_the_commands_the_budget_models"/>, and this test uses
+    /// the constant that test pins.
+    ///
+    /// THE BUDGET IS COMPUTED HERE RATHER THAN BY CALLING <c>RetryBudgetFor</c>, which is
+    /// the difference between a test and a tautology. Expressed through that function,
+    /// both sides of the comparison move together whenever a term inside it changes — the
+    /// policy is derived from it too — so deleting the very factor this round is about
+    /// would leave this green. Written out, the function is on one side and the arithmetic
+    /// it is supposed to implement is on the other.
+    ///
     /// Control: <c>DatabaseTimeouts.Request</c> being derived from
     /// <c>RequestTimeoutFor</c> rather than chosen.
-    /// Restored to the flat <c>TimeSpan.FromSeconds(30)</c> this replaces → red, "The
+    /// Restored to the flat <c>TimeSpan.FromSeconds(30)</c> two rounds ago → red, "The
     /// request bound is 00:00:30, and the retry policy this application configures can keep
-    /// one command running for 00:03:50 (6 attempts x 00:00:30, plus 5 backoffs of up to
-    /// 00:00:10). A request timeout below that cancels the retries that exist to carry
-    /// Michelle's first request of the day through an auto-paused database."
+    /// one operation running for 00:09:50 (6 attempts x 3 commands x 00:00:30, plus 5
+    /// backoffs of up to 00:00:10). A request timeout below that cancels the retries that
+    /// exist to carry Michelle's first request of the day through an auto-paused database."
     ///
-    /// Also red on the narrower deletion — the <c>maxRetryDelay * maxRetryCount</c> term
-    /// inside <c>RetryBudgetFor</c>'s use by <c>RequestTimeoutFor</c> — with the same
-    /// sentence and "The request bound is 00:03:30". Two ways to break one relationship,
-    /// and the test names the relationship rather than either term.
+    /// Control: the <c>commandsPerAttempt</c> factor inside <c>RetryBudgetFor</c> — this
+    /// round's term.
+    /// Deleted → red, same sentence, "The request bound is 00:04:20" against the same
+    /// 00:09:50 budget.
+    ///
+    /// Control: the <c>maxRetryDelay * maxRetryCount</c> term inside <c>RetryBudgetFor</c>.
+    /// Deleted → red, same sentence, "The request bound is 00:09:30". Three ways to break
+    /// one relationship, and the test names the relationship rather than any one term.
     /// </summary>
     [Fact]
     public void The_request_bound_outlives_the_retry_budget()
@@ -190,36 +267,51 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
         var request = options.Value.DefaultPolicy?.Timeout
             ?? throw new InvalidOperationException("No default request timeout is configured.");
 
-        var budget = DatabaseTimeouts.RetryBudgetFor(command, retries, backoff);
+        const int Commands = DatabaseTimeouts.DiscardCommandsPerAttempt;
+        var budget = (command * Commands * (retries + 1)) + (backoff * retries);
 
         Assert.True(
             request > budget,
             $"The request bound is {request}, and the retry policy this application "
-            + $"configures can keep one command running for {budget} ({retries + 1} attempts "
-            + $"x {command}, plus {retries} backoffs of up to {backoff}). A request timeout "
-            + "below that cancels the retries that exist to carry Michelle's first request "
-            + "of the day through an auto-paused database.");
+            + $"configures can keep one operation running for {budget} ({retries + 1} "
+            + $"attempts x {Commands} commands x {command}, plus {retries} backoffs of up "
+            + $"to {backoff}). A request timeout below that cancels the retries that exist "
+            + "to carry Michelle's first request of the day through an auto-paused "
+            + "database.");
     }
 
     /// <summary>
-    /// The relationship above, exercised rather than computed.
+    /// The relationship above, exercised rather than computed — INCLUDING THE TERM THAT
+    /// WAS WRONG.
     ///
-    /// Scaled down so it costs a second: a strategy that retries once after a fixed,
-    /// measurable backoff, and a request timeout derived by the SAME function from those
-    /// scaled numbers. The request spends longer in the retry loop than any single command
-    /// is allowed to take, which is precisely the shape of a database resuming from
-    /// auto-pause — and it must still arrive.
+    /// The previous version of this test could not fail for the reason it existed. It
+    /// derived its request bound from <c>command: 250ms</c> while the harness pinned the
+    /// running application's command timeout at production's thirty seconds, so the
+    /// request never spent measurable time in a command at all: every second of the wait
+    /// was backoff, and the command term could have been any value without changing the
+    /// outcome. "One command's worth of patience" was a sentence about a number nothing
+    /// used.
     ///
-    /// The arithmetic is the thing under test, so the policy comes from
-    /// <c>DatabaseTimeouts.RequestTimeoutFor</c> rather than from a number chosen here. A
-    /// test that picked its own comfortable timeout would pass whatever the function did.
+    /// So the harness takes the command timeout now, and the request is made to spend real
+    /// time in COMMANDS as well as in backoff — an interceptor stalls every read, which is
+    /// the shape of a database that has accepted a statement and is still thinking about
+    /// it. The scaled numbers are picked so the run sits between the bound this function
+    /// derives and the bound it would derive with either term missing, which is the only
+    /// arrangement in which both terms are load-bearing:
     ///
-    /// Control: the <c>maxRetryDelay * maxRetryCount</c> term
-    /// <c>DatabaseTimeouts.RequestTimeoutFor</c> takes from <c>RetryBudgetFor</c>.
-    /// Deleted → red, "Assert.Equal() Failure: Values differ, Expected: OK, Actual:
-    /// GatewayTimeout" — without the backoff term the derived bound is shorter than the
-    /// wait the retry policy is in the middle of, and the middleware kills the request the
-    /// retry was about to rescue.
+    ///   seven stalled reads x 800ms + one 3s backoff  = 8.6s of real work
+    ///   the derived bound, 7 x 1s + 3s                = 10.0s  (1.4s of headroom)
+    ///   without the backoff term, 7 x 1s              =  7.0s  (would cut it off)
+    ///   without the commands factor, 3 x 1s + 3s      =  6.0s  (would cut it off)
+    ///
+    /// Control: the <c>commandsPerAttempt</c> factor in
+    /// <c>DatabaseTimeouts.RetryBudgetFor</c> — this round's term.
+    /// Deleted (the budget reverted to one command per attempt) → red, "Assert.Equal()
+    /// Failure: Values differ, Expected: OK, Actual: GatewayTimeout" after 6 seconds.
+    ///
+    /// Also red on the <c>maxRetryDelay * maxRetryCount</c> term, same message, after 7
+    /// seconds — the deletion the previous version of this line named, re-run against the
+    /// rewritten test (D077).
     /// </summary>
     [Fact]
     public async Task A_request_the_retry_policy_is_carrying_is_not_cut_off()
@@ -229,21 +321,25 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
         using var client = ClientFor(_factory, providerPublicId);
         var draft = await SeedEmptyDraftAsync(client);
 
-        // One command's worth of patience, one retry, and a backoff long enough that a
-        // bound which ignored it would fire in the middle of the wait.
-        var command = TimeSpan.FromMilliseconds(250);
-        var backoff = TimeSpan.FromMilliseconds(1200);
+        // Whole seconds: sql.CommandTimeout takes an int, so a fractional value here would
+        // be a number the running application does not have — which is the defect this
+        // rewrite is about.
+        var command = TimeSpan.FromSeconds(1);
+        var backoff = TimeSpan.FromSeconds(3);
+        var stall = TimeSpan.FromMilliseconds(800);
         const int Retries = 1;
 
         using var resuming = new PracticeApiFactory(sql.ConnectionString, services =>
         {
             FailureHarness.RetriesAfterAMeasurableWait(
-                sql.ConnectionString, services, Retries, backoff);
+                sql.ConnectionString, services, Retries, backoff, command,
+                new DelaysEveryRead(stall));
 
             services.Configure<RequestTimeoutOptions>(options => options.DefaultPolicy =
                 new RequestTimeoutPolicy
                 {
-                    Timeout = DatabaseTimeouts.RequestTimeoutFor(command, Retries, backoff),
+                    Timeout = DatabaseTimeouts.RequestTimeoutFor(
+                        command, Retries, backoff, DatabaseTimeouts.DiscardCommandsPerAttempt),
                 });
         });
 
@@ -255,6 +351,114 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
         using var response = await resumingClient.DeleteAsync($"/notes/{draft}");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ------------------------------- the bound the request bound cannot set (1.16 F2)
+
+    /*
+     * A REQUEST TIMEOUT IS NOT A CEILING ON A REQUEST, AND TWO ROUNDS OF THIS FIX ASSUMED
+     * IT WAS.
+     *
+     * RequestTimeoutsMiddleware cancels HttpContext.RequestAborted and then AWAITS the
+     * rest of the pipeline. It stops work that observes a token. Audit writes deliberately
+     * observe none (D075) — an audit row that vanishes when a phone locks is not an audit
+     * row — so a DELETE against a wedged database ran its refusal audit ON PAST the
+     * request bound, and the tier's real ceiling was the two ADDED rather than the larger
+     * of the two. The nesting the repository had written down was false by its own
+     * arithmetic: 260 + 230 against a BFF that gave up at 300.
+     *
+     * A bigger constant does not fix that, because the tail is precisely the part the
+     * request bound cannot see. What fixes it is a second bound owned by the writes
+     * themselves, and what proves it is a clock.
+     */
+
+    /// <summary>
+    /// THE CEILING, MEASURED: the request bound, plus one grace period, and nothing else.
+    ///
+    /// The audit table is made to hang for twenty seconds; every other read answers
+    /// normally, so the request reaches its refusal audit quickly and is still inside it
+    /// when the request bound fires. Both halves of the claim are in the elapsed time:
+    ///
+    ///   * it is LONGER than the request bound, so there really is uncancellable work
+    ///     running past that bound — a test that did not check this would pass on a system
+    ///     where the tail did not exist and prove nothing about one where it does;
+    ///   * it is SHORTER than the request bound plus the grace, which is the ceiling
+    ///     <c>DatabaseTimeouts.Ceiling</c> claims and the number the BFF sits above.
+    ///
+    /// Scaled — 2s and 2s against production's 620 and 90 — because the relationship is
+    /// what is under test and nothing can be measured against eleven minutes. The
+    /// construction backstop is deliberately far away (60s), so that the deadline arriving
+    /// on time is attributable to the binding rather than to the fallback.
+    ///
+    /// Control: <c>AuditWriter</c> saving on <c>deadline.Token</c>.
+    /// Restored to <c>CancellationToken.None</c>, the shape before this commit → red,
+    /// "The audit write ran for 20.1s past a 2s request bound. RequestTimeoutsMiddleware
+    /// cancels RequestAborted and then waits, so an uncancellable write ADDS to the
+    /// request bound rather than nesting inside it."
+    ///
+    /// Also red on <c>ProviderContextMiddleware</c>'s <c>deadline.BindTo</c>, same
+    /// sentence with 20.1s — without it the deadline falls back to its construction
+    /// backstop, which is a bound on the wrong clock.
+    /// </summary>
+    [Fact]
+    public async Task The_ceiling_is_the_request_bound_plus_the_uncancellable_tail()
+    {
+        var providerPublicId = await SeedProviderAsync();
+
+        var requestBound = TimeSpan.FromSeconds(2);
+        var grace = TimeSpan.FromSeconds(2);
+        var wedged = TimeSpan.FromSeconds(20);
+
+        using var stalled = new PracticeApiFactory(sql.ConnectionString, services =>
+        {
+            FailureHarness.With(
+                sql.ConnectionString,
+                new StallsEveryStatementAgainst("AuditEvents", wedged))(services);
+
+            FailureHarness.BoundedBy(services, backstop: TimeSpan.FromSeconds(60), grace);
+
+            services.Configure<RequestTimeoutOptions>(options => options.DefaultPolicy =
+                new RequestTimeoutPolicy { Timeout = requestBound });
+        });
+
+        using var client = ClientFor(stalled, providerPublicId);
+
+        // Warm the host, the pool and the query plans, so the measurement below is of the
+        // request and not of everything a first request drags in with it.
+        (await client.GetAsync("/health/live")).Dispose();
+
+        /*
+         * DELETE of an id that exists nowhere — F2's own example.
+         *
+         * It is the shortest path in the API to an uncancellable write: two reads that
+         * answer at once, then a refusal audit row that is the ONLY thing the attempt
+         * leaves behind (D052, docs/SECURITY.md §Audit). Nothing else is in the way, so
+         * what the clock measures is the tail.
+         */
+        var started = Stopwatch.GetTimestamp();
+        using var response = await client.DeleteAsync($"/notes/{Guid.NewGuid()}");
+        var elapsed = Stopwatch.GetElapsedTime(started);
+
+        Assert.True(
+            elapsed > requestBound,
+            $"The response arrived in {elapsed.TotalSeconds:0.0}s, within the "
+            + $"{requestBound.TotalSeconds:0}s request bound. This test has to reach an "
+            + "uncancellable write that is still running when that bound fires, or it "
+            + "measures nothing — check that the audit table is the one being stalled.");
+
+        // The grace, plus room for the host: the assertion is about a bound holding, not
+        // about the exact moment it fires, and a machine under load must not turn a
+        // 4-second answer into a failure. The alternative it is separating itself from is
+        // 20 seconds.
+        var ceiling = requestBound + grace + TimeSpan.FromSeconds(3);
+
+        Assert.True(
+            elapsed < ceiling,
+            $"The audit write ran for {elapsed.TotalSeconds:0.0}s past a "
+            + $"{requestBound.TotalSeconds:0}s request bound. RequestTimeoutsMiddleware "
+            + "cancels RequestAborted and then waits, so an uncancellable write ADDS to "
+            + "the request bound rather than nesting inside it. DatabaseTimeouts.Ceiling "
+            + "is only true while something bounds that tail.");
     }
 
     /// <summary>
@@ -271,9 +475,19 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
     /// So the number is read out of the file rather than described. Two trees, one
     /// relationship, and a test that fails when either side moves.
     ///
+    /// COMPARED AGAINST THE CEILING, NOT THE REQUEST BOUND, and that is this round's
+    /// correction. The previous version asserted <c>bff &gt; DatabaseTimeouts.Request</c>
+    /// and was green while the real ceiling — the request bound PLUS the uncancellable
+    /// audit tail — sat above the BFF's timeout. It compared the BFF with the wrong number
+    /// and therefore could not see the inversion it existed to catch.
+    /// <see cref="The_ceiling_is_the_request_bound_plus_the_uncancellable_tail"/> is what
+    /// establishes that the number on the right is the real one.
+    ///
     /// Control: <c>API_TIMEOUT_MS</c> in web/lib/api/timeouts.ts.
-    /// Lowered to the 25_000 the old comment claimed → red, "The BFF gives up after
-    /// 00:00:25 while this API is prepared to spend 00:04:20 on a request. The tier that
+    /// Lowered to the 300_000 it held before this round — which is above
+    /// <c>DatabaseTimeouts.Request</c> and below <c>DatabaseTimeouts.Ceiling</c>, so it is
+    /// also the deletion that shows the comparison changed — → red, "The BFF gives up
+    /// after 00:05:00 while this API's ceiling on a request is 00:11:50. The tier that
     /// gives up first decides the bound, so a shorter BFF timeout silently replaces every
     /// number on DatabaseTimeouts — including the retry budget it is sized around."
     /// </summary>
@@ -295,11 +509,11 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
                 CultureInfo.InvariantCulture));
 
         Assert.True(
-            bff > DatabaseTimeouts.Request,
-            $"The BFF gives up after {bff} while this API is prepared to spend "
-            + $"{DatabaseTimeouts.Request} on a request. The tier that gives up first "
-            + "decides the bound, so a shorter BFF timeout silently replaces every number "
-            + "on DatabaseTimeouts — including the retry budget it is sized around.");
+            bff > DatabaseTimeouts.Ceiling,
+            $"The BFF gives up after {bff} while this API's ceiling on a request is "
+            + $"{DatabaseTimeouts.Ceiling}. The tier that gives up first decides the "
+            + "bound, so a shorter BFF timeout silently replaces every number on "
+            + "DatabaseTimeouts — including the retry budget it is sized around.");
     }
 
     /// <summary>

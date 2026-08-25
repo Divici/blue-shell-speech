@@ -273,39 +273,62 @@ public sealed class ProviderAuthenticator(
 /// rule one line at a time. With the parameter present, the analyzer enforces the defect.
 /// Removing it is the only version of this fix the toolchain agrees with.
 ///
-/// THE COST, STATED PROPERLY. A write that cannot be cancelled cannot be stopped by the
-/// request timeout either — that policy cancels HttpContext.RequestAborted, and this write
-/// holds no token to cancel. Against a wedged database it is bounded by
-/// DatabaseTimeouts.RetryBudget — six attempts of thirty seconds with up to ten seconds of
-/// backoff between them, so 3 minutes 50 seconds — on a request nobody is waiting for.
-/// That number is now a named constant rather than a sentence: DatabaseTimeouts.Request is
-/// derived from it, so the two cannot drift apart the way they did.
+/// THE COST, AND THE BOUND THAT REPLACED THE SENTENCE ABOUT IT. A write that ignores the
+/// request's token cannot be stopped by the request timeout either — that policy cancels
+/// HttpContext.RequestAborted and then AWAITS the pipeline, so it bounds work that
+/// observes a token and nothing else. This paragraph has now been wrong about that bound
+/// twice, which is worth recording because both versions read as decisions:
 ///
-/// This paragraph used to say "holds its connection until the command timeout", which
-/// named a bound that no configuration set at all: AddInfrastructure configured no command
-/// timeout, so the number was SqlClient's default and the sentence read as a decision
-/// somebody had taken. That is D072's defect class — a control described in a comment and
-/// absent from the code reads as STRONGER than no control, because the next person checks
-/// whether the problem was considered rather than whether it was solved. The timeout is
-/// configured now, and the arithmetic above is the honest version of the claim.
+///   * "holds its connection until the command timeout" named a number no configuration
+///     set at all — AddInfrastructure configured none, so it was SqlClient's default.
+///   * "bounded by DatabaseTimeouts.RetryBudget ... on a request nobody is waiting for"
+///     was arithmetic rather than a control. Nothing enforced it, and it composed the
+///     wrong way round: the request bound and this budget ADD, so the tier's real ceiling
+///     was 260 + 230 seconds against a BFF that gave up at 300. The nesting the repository
+///     had written down was false by its own numbers.
 ///
-/// It is still the right trade. The alternative is an audit trail with a survivorship bias
-/// toward uninterrupted requests, which is not an audit trail (docs/SECURITY.md §Audit).
+/// So the bound is a mechanism now, not a sentence. AuditWriter saves on
+/// UncancellableWriteDeadline.Token: a per-request deadline that does not move when the
+/// caller goes away, gives every remaining uncancellable write DatabaseTimeouts
+/// .UncancellableGrace ONCE between them from the moment the request bound fires, and caps
+/// itself at DatabaseTimeouts.Ceiling regardless. The request bound plus that grace IS
+/// DatabaseTimeouts.Ceiling, and RequestBoundsTests measures it on a real DELETE rather
+/// than deriving it here.
+///
+/// It is still the right trade, and the durability it buys is unchanged: cancelling the
+/// caller's token does not cancel this write, which is the property
+/// A_refused_discard_is_audited_even_when_the_caller_disconnects pins. What is given up is
+/// the tail: a database still refusing work a grace period after a request has burned its
+/// entire budget loses the row, where an unbounded write might eventually have landed it.
+/// A bounded loss beats an audit trail with a survivorship bias toward uninterrupted
+/// requests, which is not an audit trail (docs/SECURITY.md §Audit).
 /// </summary>
 public interface IAuditWriter
 {
     Task WriteAsync(AuditEvent auditEvent);
 }
 
-public sealed class AuditWriter(PracticeDbContext db) : IAuditWriter
+public sealed class AuditWriter(PracticeDbContext db, UncancellableWriteDeadline deadline)
+    : IAuditWriter
 {
     public async Task WriteAsync(AuditEvent auditEvent)
     {
         db.AuditEvents.Add(auditEvent);
 
-        // Spelled out rather than left to the default, because it is a decision and not an
-        // omission. See the interface.
-        await db.SaveChangesAsync(CancellationToken.None);
+        /*
+         * NOT the caller's token, and NOT CancellationToken.None.
+         *
+         * The caller's token would abandon the row the moment a phone locks, which is the
+         * defect D075 closed by deleting the parameter. CancellationToken.None was the
+         * first answer to that and it left this write outside every bound the application
+         * sets — the request timeout cancels RequestAborted and then waits, so an
+         * uncancellable save simply runs on past it and ADDS to the tier's ceiling.
+         *
+         * The deadline is per request and shared: it does not move when the caller goes
+         * away, and it expires a fixed grace after the request bound does. See the
+         * interface, and DatabaseTimeouts.Ceiling for the arithmetic it makes true.
+         */
+        await db.SaveChangesAsync(deadline.Token);
     }
 }
 

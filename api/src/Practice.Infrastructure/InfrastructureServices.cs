@@ -103,6 +103,20 @@ public static class InfrastructureServices
             .AddTokenProvider<AuthenticatorTokenProvider<PracticeUser>>(
                 TokenOptions.DefaultAuthenticatorProvider);
 
+        /*
+         * SCOPED, so one deadline covers every uncancellable write in a request.
+         *
+         * Per-write would let a path with three audit writes spend three graces, and
+         * "how many audit writes can a path have after cancellation" is exactly the kind
+         * of enumeration this repository keeps getting wrong. One shared deadline makes
+         * DatabaseTimeouts.Ceiling true by construction instead of by counting.
+         *
+         * ProviderContextMiddleware binds it to HttpContext.RequestAborted at the top of
+         * every request; the ceiling argument is the fallback for a scope nothing binds.
+         */
+        services.AddScoped(_ => new UncancellableWriteDeadline(
+            DatabaseTimeouts.Ceiling, DatabaseTimeouts.UncancellableGrace));
+
         services.AddScoped<IAuditWriter, AuditWriter>();
         services.AddScoped<IProviderAuthenticator, ProviderAuthenticator>();
         services.AddScoped<IConsultationNotifier, LoggingConsultationNotifier>();

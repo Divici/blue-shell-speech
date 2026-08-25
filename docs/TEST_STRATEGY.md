@@ -70,6 +70,34 @@ deleting anything from it.**
 Same reasoning as the rest of this section, one layer down: the question is never "is this
 line in the repository", it is "is this line what the database is running".
 
+### A guard over a SET enumerates the set, or it is not a guard
+
+**A test that means "all of them" and holds a hard-coded list is a test about the day it was
+written.** It stays green when the set grows, which is exactly when it was supposed to speak.
+Five have shipped here (D090's sweep):
+
+- the BFF timeout guard listed five client modules; `lib/api/enquiries.ts` arrived and was
+  checked by nothing;
+- the E2E route guard listed six of nine authenticated pages, under a comment claiming a new
+  page is covered "by existing there";
+- `cache: "no-store"` had no cross-file guard at all, only per-file assertions in two of
+  seven modules;
+- the Application architecture test used a **denylist** of the projects that existed when it
+  was written, so a reference to a new one passed;
+- `docs/TEST_STRATEGY.md` itself claimed the cross-provider tests were parameterized over the
+  route table. They are not.
+
+So: **walk the directory, enumerate the route table, read the assembly, match a naming
+convention — derive the set from the thing itself.** Where that is impossible, say so in the
+docstring rather than implying otherwise, and name what would close it.
+
+Two further rules the first four of those taught:
+
+- **Prefer an allowlist.** "Anything but X" grows with the codebase; "only Y" does not.
+- **A walk that finds nothing registers no tests and the file is green.** Assert a floor on
+  what the walk found, in its own `it`/`[Fact]`, or a rename silently deletes the guard.
+  Assert a *floor*, never an exact count — an exact count is the list again.
+
 **Deliberately not automated.** A mutation harness in CI would gate the build on a score,
 which is the coverage-threshold failure mode this file rejects, and CLAUDE.md keeps quality
 signals of this kind out of CI. A hook or a lint rule can only check that the sentence exists
@@ -102,9 +130,15 @@ different engine than production proves the wrong thing.
 
 These are ordinary CI tests. Adding an endpoint without them fails the build.
 
-- **Cross-provider access on every endpoint.** Parameterized over the route table, so a new
-  endpoint with no test is a build failure rather than an oversight. Expects **404, not 403** —
-  a 403 confirms the resource exists.
+- **Cross-provider access on every endpoint.** One test per endpoint, hand-written, in
+  `PatientIsolationTests`, `NoteImmutabilityTests`, `SchedulingTests` and
+  `ConsultationInboxTests`. Expects **404, not 403** — a 403 confirms the resource exists.
+  **This line used to say "parameterized over the route table, so a new endpoint with no test
+  is a build failure rather than an oversight". It is not, and never was.** Nothing enumerates
+  `EndpointDataSource`, so an endpoint added without a tenancy test is an ordinary oversight
+  that nothing catches — and a document claiming automatic coverage is worse than one claiming
+  none, because it stops the next person checking (D072's class, D090's sweep). The
+  route-table version is real work and is queued as WORK_QUEUE 4.8.
 - **Provider identity comes from the token.** A request supplying `providerId` in the body is
   rejected.
 - **`Cache-Control: no-store` on every authenticated response.** Ranked #1 in the threat model.
