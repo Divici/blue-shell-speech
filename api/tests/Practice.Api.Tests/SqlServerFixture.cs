@@ -101,8 +101,17 @@ public sealed class SqlServerFixture : IAsyncLifetime
     public async Task DisposeAsync() => await _container.DisposeAsync();
 }
 
+/// <summary>
+/// One collection, two containers.
+///
+/// <see cref="AzuriteFixture"/> joins <see cref="SqlServerFixture"/> here rather than being
+/// started per test class, because the readiness probe reads blob storage and two classes
+/// need it. A collection fixture starts it once for the run; a class fixture would start it
+/// once per class, and a second emulator would cost more than the tests that use it.
+/// </summary>
 [CollectionDefinition(Name)]
-public sealed class UsesSqlServer : ICollectionFixture<SqlServerFixture>
+public sealed class UsesSqlServer
+    : ICollectionFixture<SqlServerFixture>, ICollectionFixture<AzuriteFixture>
 {
     public const string Name = "sqlserver";
 }
@@ -118,14 +127,24 @@ public sealed class UsesSqlServer : ICollectionFixture<SqlServerFixture>
 /// </summary>
 public sealed class PracticeApiFactory(
     string connectionString,
-    Action<IServiceCollection>? configureServices = null) : WebApplicationFactory<Program>
+    Action<IServiceCollection>? configureServices = null,
+    string? storageConnectionString = null) : WebApplicationFactory<Program>
 {
     protected override IHost CreateHost(IHostBuilder builder)
     {
+        /*
+         * ConnectionStrings:Storage is OPTIONAL and left null by most callers, on purpose.
+         *
+         * The blob readiness probe reports unready when it is absent, which is the right
+         * answer and is asserted in ReadinessCheckTests — but only the health tests read
+         * /health/ready, so paying for storage configuration in every other class would buy
+         * nothing. Whoever needs a reachable account passes AzuriteFixture.ConnectionString.
+         */
         builder.ConfigureHostConfiguration(config =>
             config.AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:Sql"] = connectionString,
+                ["ConnectionStrings:Storage"] = storageConnectionString,
             }));
 
         return base.CreateHost(builder);

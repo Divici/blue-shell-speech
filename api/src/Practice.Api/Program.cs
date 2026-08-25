@@ -6,6 +6,7 @@ using Practice.Api.Scheduling;
 using Practice.Api.Startup;
 using Practice.Application.Providers;
 using Practice.Infrastructure;
+using Practice.Infrastructure.Health;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Timeouts;
@@ -54,10 +55,12 @@ builder.Services.AddProblemDetails();
  * Locally, docker compose supplies a throwaway SQL login that exists only on a
  * developer's machine.
  */
-builder.Services.AddInfrastructure(
+var sqlConnectionString =
     builder.Configuration.GetConnectionString("Sql")
     ?? throw new InvalidOperationException(
-        "ConnectionStrings:Sql is not configured. The API cannot start without a database."));
+        "ConnectionStrings:Sql is not configured. The API cannot start without a database.");
+
+builder.Services.AddInfrastructure(sqlConnectionString);
 
 /*
  * A CEILING ON A REQUEST NOBODY IS WAITING FOR — ABOVE THE RETRY BUDGET, NOT UNDER IT.
@@ -98,21 +101,34 @@ builder.Services.AddRequestTimeouts(options =>
 /*
  * Two probes with different jobs (docs/ARCHITECTURE.md).
  *
- *   live  — is the process up? Failing restarts the container.
- *   ready — can it serve traffic? Failing removes it from rotation.
+ *   live  — is the process up? Failing RESTARTS the container.
+ *   ready — can it serve traffic? Failing REMOVES IT FROM ROTATION.
  *
- * `ready` will check SQL and blob storage. It deliberately will NOT check Azure OpenAI:
- * presearch §19 requires patient records, scheduling, and manual notes to keep working
- * when AI is unavailable, so AI being down must never take the app out of rotation.
+ * The consequences are what decide the split, and they point in opposite directions. A
+ * liveness check that dialled SQL would restart a healthy process because an auto-paused
+ * Azure SQL was asleep — and a restart cannot wake a database, it only puts a cold start
+ * in front of the resume. So `live` asks one question this process can answer on its own:
+ * am I running. Nothing tagged "live" touches another machine.
  *
- * TODO(slice 3): register the SQL and blob checks with the "ready" tag once EF Core and
- * the storage client exist. Until then the readiness probe reports zero dependency
- * checks — see the response writer below, which makes that visible rather than
- * reporting a bare, meaningless 200.
+ * `ready` checks SQL and blob storage, because a replica that cannot reach either cannot
+ * serve, and the case that actually matters is a revision rollout: Container Apps shifts
+ * traffic to a new revision only after its probes pass (docs/ARCHITECTURE.md), so a
+ * connection string that does not work or a managed identity that was never granted has
+ * exactly one place to be caught.
+ *
+ * It deliberately does NOT check Azure OpenAI: presearch §19 requires patient records,
+ * scheduling and manual notes to keep working when AI is unavailable, so AI being down
+ * must never take the app out of rotation.
+ *
+ * This used to be a TODO(slice 3) and one "self" check, with a test pinning the readiness
+ * probe at ZERO dependency checks so that registering them would break it (WORK_QUEUE 1.8).
+ * It did.
  */
 builder.Services
     .AddHealthChecks()
-    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: ["live"]);
+    .AddCheck("self", () => HealthCheckResult.Healthy(), tags: [ReadinessChecks.LiveTag])
+    .AddReadinessChecks(
+        sqlConnectionString, builder.Configuration.GetConnectionString("Storage"));
 
 /*
  * The provider context is SCOPED: one per request, resolved by middleware from the
@@ -171,17 +187,33 @@ app.MapAppointmentEndpoints();
 app.MapNoteEndpoints();
 app.MapConsultationEndpoints();
 
+/*
+ * A PROBE IS BOUNDED AT PROBE SCALE, NOT AT REQUEST SCALE.
+ *
+ * Without this, both routes inherit the default policy above — DatabaseTimeouts.Request,
+ * ten minutes and twenty seconds. Every term in that number is justified for a REQUEST
+ * (D086, D090): a clinician is waiting, the database may be resuming from auto-pause, and
+ * the retry policy carrying her through it must not be truncated. None of it is true of a
+ * probe. Nobody is waiting for a readiness answer; an orchestrator asked, and it will ask
+ * again in seconds, and an answer that arrives ten minutes later answers a question that
+ * has already been decided three ways.
+ *
+ * HealthProbeBounds.EndpointTimeout is the backstop, not the bound that matters — each
+ * check carries HealthProbeBounds.Probe of its own, so a dependency that is slow is
+ * answered as a status rather than as a 504 with no body. This catches a check that
+ * ignores its cancellation token.
+ */
 app.MapHealthChecks("/health/live", new HealthCheckOptions
 {
-    Predicate = registration => registration.Tags.Contains("live"),
+    Predicate = registration => registration.Tags.Contains(ReadinessChecks.LiveTag),
     ResponseWriter = WriteHealthResponse,
-});
+}).WithRequestTimeout(HealthProbeBounds.EndpointTimeout);
 
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
-    Predicate = registration => registration.Tags.Contains("ready"),
+    Predicate = registration => registration.Tags.Contains(ReadinessChecks.ReadyTag),
     ResponseWriter = WriteHealthResponse,
-});
+}).WithRequestTimeout(HealthProbeBounds.EndpointTimeout);
 
 app.Run();
 
@@ -192,6 +224,25 @@ app.Run();
 /// from one where every dependency passed. That is how a readiness probe ends up asserting
 /// nothing while an orchestrator routes traffic to a replica that cannot reach its database.
 /// Naming the checks makes an empty probe obvious to a human and assertable by a test.
+///
+/// A NAME AND A STATUS, AND DELIBERATELY NOTHING ELSE. Both health routes are
+/// UNAUTHENTICATED — whatever this writes is written to whoever asks — so every richer
+/// field the framework offers is left out on purpose:
+///
+///   Description  a check's own sentence. This application's are a fixed vocabulary with no
+///                account, container, server or database name in them, but the rule holds
+///                without depending on that.
+///   Exception    the thrown object. An Azure SDK failure carries the full request URI —
+///                account and container — and a SqlException carries the server name. This
+///                is the field that would publish them.
+///   Data         arbitrary per-check values, which is where the next check will put
+///                whatever seemed useful at the time.
+///   Duration     how long the dependency took, which is a timing signal about
+///                infrastructure nobody has asked for.
+///
+/// The allowlist is asserted rather than described: HealthEndpointTests walks every property
+/// name in this payload and fails on one it does not recognise, so a field added here
+/// arrives red rather than arriving unnoticed.
 /// </summary>
 static Task WriteHealthResponse(HttpContext context, HealthReport report)
 {

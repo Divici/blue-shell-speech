@@ -254,6 +254,23 @@ object" is not a control.
 Health endpoints: `/health/live` and `/health/ready`. Ready checks SQL and blob; it does **not**
 check Azure OpenAI, because AI being down must not take the app down (§19).
 
+**The split is decided by the consequence, not by the dependency.** A failing liveness probe
+RESTARTS the container; a failing readiness probe REMOVES IT FROM ROTATION. So nothing tagged
+`live` touches another machine — a liveness check that dialled an auto-paused Azure SQL would
+restart a healthy process because a database was asleep, and a restart cannot wake a database.
+
+**Readiness distinguishes REFUSED from SLOW, and only the first is unready.** A refusal — a
+connection string that does not work, an identity that was never granted, a container that is
+not there — is `Unhealthy`, so a bad revision does not take traffic. Running out of probe time
+is `Degraded`, which answers 200 and keeps the replica in rotation: an Azure SQL resume takes
+tens of seconds, and a probe that pulls the replica out while the database wakes removes the
+very requests that would have woken it.
+
+**Probes are bounded at probe scale.** Two seconds per check and five on the endpoint
+(`HealthProbeBounds`), applied per-route so neither inherits `DatabaseTimeouts.Request`. The
+result is **cached** — long on success, short otherwise — and the SQL probe is **unpooled**, so
+a probe every few seconds does not hold an auto-pausing database online. See D091.
+
 ---
 
 ## Open
