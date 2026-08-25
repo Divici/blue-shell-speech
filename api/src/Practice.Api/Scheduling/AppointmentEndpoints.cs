@@ -76,24 +76,62 @@ public static class AppointmentEndpoints
         var endUtc = TimeZoneInfo.ConvertTimeToUtc(
             DateTime.SpecifyKind(localMidnight.AddDays(1), DateTimeKind.Unspecified), practiceZone);
 
-        var visits = await db.Appointments
+        /*
+         * The current note is resolved in the SAME query, as a correlated subquery.
+         *
+         * SQL Server compiles this to one OUTER APPLY, so the whole day still costs a
+         * single round trip. The alternative — the day view rendering, then each card
+         * asking "does this visit have a note?" — is a request per visit through the BFF
+         * to a container that scales to zero. On a phone between houses that is the
+         * difference between a page and a spinner.
+         *
+         * IsCurrent, not "the latest": after an amendment the day view must point at the
+         * version the clinician stands behind, not the one it superseded.
+         */
+        var rows = await db.Appointments
             .AsNoTracking()
             .Where(a => a.StartUtc >= startUtc && a.StartUtc < endUtc)
             .OrderBy(a => a.StartUtc)
             .Join(db.Patients, a => a.PatientId, p => p.Id, (a, p) => new { a, p })
-            .Select(x => new DayVisit(
-                x.a.PublicId,
-                x.p.PublicId,
+            // Columns, not entities. Selecting `x.a` and `x.p` whole would drag every
+            // patient column across the wire for a schedule — ClinicalSummary included,
+            // which is free-text PHI this screen never shows.
+            .Select(x => new
+            {
+                VisitPublicId = x.a.PublicId,
+                PatientPublicId = x.p.PublicId,
                 x.p.FirstName,
                 x.p.LastName,
-                x.a.AppointmentType.ToString(),
+                x.a.AppointmentType,
                 x.a.StartUtc,
                 x.a.DurationMinutes,
-                x.a.Status.ToString(),
+                VisitStatus = x.a.Status,
                 x.a.TravelBlockMinutes,
                 x.a.Mileage,
-                x.a.Notes))
+                x.a.Notes,
+                Note = db.ClinicalNotes
+                    .Where(n => n.AppointmentId == x.a.Id && n.IsCurrent)
+                    .Select(n => new { n.PublicId, n.Status })
+                    .FirstOrDefault(),
+            })
             .ToListAsync(ct);
+
+        var visits = rows.Select(x => new DayVisit(
+            x.VisitPublicId,
+            x.PatientPublicId,
+            x.FirstName,
+            x.LastName,
+            x.AppointmentType.ToString(),
+            x.StartUtc,
+            x.DurationMinutes,
+            x.VisitStatus.ToString(),
+            x.TravelBlockMinutes,
+            x.Mileage,
+            x.Notes,
+            // Null means "not documented yet", and must stay distinguishable from a note
+            // whose id failed to load. Guid.Empty would read as a real, broken link.
+            x.Note?.PublicId,
+            x.Note?.Status.ToString())).ToList();
 
         var totalMileage = visits.Sum(v => v.Mileage ?? 0m);
 
@@ -258,10 +296,19 @@ public sealed record AppointmentSummary(
     string AppointmentType, DateTime StartUtc, short DurationMinutes, string Status,
     short? TravelBlockMinutes, decimal? Mileage);
 
+/// <summary>
+/// A visit on the daily view, including whether it has been documented.
+///
+/// <see cref="NotePublicId"/> and <see cref="NoteStatus"/> describe the CURRENT clinical
+/// note for this visit, or null if none exists yet. They are carried here so the day view
+/// can offer "open the note" or "start one" per visit from a single request, rather than
+/// one lookup per card.
+/// </summary>
 public sealed record DayVisit(
     Guid PublicId, Guid PatientPublicId, string PatientFirstName, string PatientLastName,
     string AppointmentType, DateTime StartUtc, short DurationMinutes, string Status,
-    short? TravelBlockMinutes, decimal? Mileage, string? Notes);
+    short? TravelBlockMinutes, decimal? Mileage, string? Notes,
+    Guid? NotePublicId, string? NoteStatus);
 
 public sealed record DaySchedule(DateOnly Date, IReadOnlyList<DayVisit> Visits, decimal TotalMileage);
 

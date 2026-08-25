@@ -1,13 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  scheduleApi,
-  formatVisitRange,
-  practiceToday,
-  shiftDate,
-  type DayVisit,
-} from "@/lib/api/schedule";
-import { HomeIcon, CalendarIcon } from "@/components/icons";
+import { scheduleApi, practiceToday, shiftDate } from "@/lib/api/schedule";
+import { VisitCard } from "./VisitCard";
 
 export const metadata: Metadata = {
   title: "Today",
@@ -96,62 +90,6 @@ export default async function TodayPage(props: PageProps<"/today">) {
         </>
       )}
     </>
-  );
-}
-
-function VisitCard({ visit }: { visit: DayVisit }) {
-  const isDone = visit.status === "Completed";
-  const isOff = visit.status === "Cancelled" || visit.status === "NoShow";
-
-  return (
-    <li
-      className={`rounded-2xl border bg-white p-5 ${
-        isOff ? "border-ice opacity-60" : "border-ice"
-      }`}
-    >
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <p className="font-display text-lg font-bold text-navy">
-          {formatVisitRange(visit.startUtc, visit.durationMinutes)}
-        </p>
-
-        {visit.status !== "Scheduled" && (
-          <span
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              isDone ? "bg-teal/15 text-teal" : "bg-sand/40 text-navy"
-            }`}
-          >
-            {visit.status === "NoShow" ? "No show" : visit.status}
-          </span>
-        )}
-
-        <span className="ml-auto text-sm text-ink-muted">{visit.appointmentType}</span>
-      </div>
-
-      <Link
-        href={`/patients/${visit.patientPublicId}`}
-        className="mt-2 inline-block text-lg font-semibold text-blue-deep hover:underline"
-      >
-        {visit.patientFirstName} {visit.patientLastName}
-      </Link>
-
-      {visit.travelBlockMinutes ? (
-        <p className="mt-2 flex items-center gap-2 text-sm text-ink-muted">
-          <HomeIcon size={16} />
-          Allow {visit.travelBlockMinutes} min travel
-        </p>
-      ) : null}
-
-      {visit.notes && (
-        <p className="mt-2 text-sm leading-relaxed text-ink">{visit.notes}</p>
-      )}
-
-      {visit.mileage !== null && (
-        <p className="mt-2 flex items-center gap-2 text-sm text-ink-muted">
-          <CalendarIcon size={16} />
-          {visit.mileage.toFixed(1)} mi
-        </p>
-      )}
-    </li>
   );
 }
 

@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
 using Practice.Api.Auth;
+using Practice.Api.ClinicalNotes;
 using Practice.Api.Patients;
 using Practice.Api.Scheduling;
 using Practice.Domain.Providers;
@@ -307,6 +308,126 @@ public sealed class SchedulingTests(SqlServerFixture sql) : IDisposable
 
         Assert.NotNull(day);
         Assert.Empty(day.Visits);
+    }
+
+    // -------------------------------------------------- the note on each visit
+
+    /// <summary>
+    /// ONE request answers "which of today's visits have a note" for the whole day.
+    ///
+    /// The day view exists to be looked at on a phone between houses. Asking the note
+    /// endpoint once per card would be a request per visit — on a container that scales
+    /// to zero, over rural cellular. The answer belongs in the payload the clinician
+    /// already asked for.
+    /// </summary>
+    [Fact]
+    public async Task The_daily_view_says_which_visits_have_a_note()
+    {
+        using var client = ClientFor(await SeedProviderAsync("Michelle"));
+        var patient = await CreatePatientAsync(client);
+
+        var documented = await ScheduleAsync(client, patient, Utc(2026, 6, 10, 14, 0));
+        var undocumented = await ScheduleAsync(client, patient, Utc(2026, 6, 10, 17, 0));
+
+        var note = await CreateNoteAsync(client, documented);
+
+        var day = await client.GetFromJsonAsync<DayScheduleDto>("/appointments/day/2026-06-10");
+
+        Assert.NotNull(day);
+        Assert.Equal(2, day.Visits.Count);
+
+        var withNote = day.Visits.Single(v => v.PublicId == documented);
+        Assert.Equal(note.PublicId, withNote.NotePublicId);
+        Assert.Equal("Draft", withNote.NoteStatus);
+
+        // Null, not an empty guid. "Not documented yet" must be distinguishable from a
+        // note whose id failed to load.
+        var withoutNote = day.Visits.Single(v => v.PublicId == undocumented);
+        Assert.Null(withoutNote.NotePublicId);
+        Assert.Null(withoutNote.NoteStatus);
+    }
+
+    /// <summary>
+    /// The status is carried too, because "which of today's notes still need signing" is
+    /// the question at the end of a day, and it is unanswerable from an id alone.
+    /// </summary>
+    [Fact]
+    public async Task The_daily_view_reports_the_notes_status()
+    {
+        using var client = ClientFor(await SeedProviderAsync("Michelle"));
+        var patient = await CreatePatientAsync(client);
+
+        var visit = await ScheduleAsync(client, patient, Utc(2026, 6, 11, 14, 0));
+        var note = await CreateNoteAsync(client, visit);
+
+        using var signed = await client.PostAsync($"/notes/{note.PublicId}/sign", null);
+        signed.EnsureSuccessStatusCode();
+
+        var day = await client.GetFromJsonAsync<DayScheduleDto>("/appointments/day/2026-06-11");
+
+        Assert.Equal("Signed", Assert.Single(day!.Visits).NoteStatus);
+    }
+
+    /// <summary>
+    /// After an amendment the day view must point at the CURRENT version.
+    ///
+    /// Following a stale id would open a superseded note, and the editor would offer to
+    /// amend a version that has already been amended.
+    /// </summary>
+    [Fact]
+    public async Task The_daily_view_points_at_the_current_version_after_an_amendment()
+    {
+        using var client = ClientFor(await SeedProviderAsync("Michelle"));
+        var patient = await CreatePatientAsync(client);
+
+        var visit = await ScheduleAsync(client, patient, Utc(2026, 6, 12, 14, 0));
+        var original = await CreateNoteAsync(client, visit);
+        await client.PostAsync($"/notes/{original.PublicId}/sign", null);
+
+        using var amended = await client.PostAsJsonAsync($"/notes/{original.PublicId}/amend",
+            new AmendNoteRequest("Corrected the accuracy figure."));
+        var v2 = (await amended.Content.ReadFromJsonAsync<NoteDto>())!;
+
+        var day = await client.GetFromJsonAsync<DayScheduleDto>("/appointments/day/2026-06-12");
+
+        var only = Assert.Single(day!.Visits);
+        Assert.Equal(v2.PublicId, only.NotePublicId);
+        Assert.NotEqual(original.PublicId, only.NotePublicId);
+    }
+
+    /// <summary>
+    /// Another provider's note must not surface here, even though the visit it hangs off
+    /// is already filtered out. Two independent scopes, both of which must hold.
+    /// </summary>
+    [Fact]
+    public async Task The_daily_view_carries_no_note_from_another_provider()
+    {
+        using var michelle = ClientFor(await SeedProviderAsync("Michelle"));
+        using var stranger = ClientFor(await SeedProviderAsync("Stranger"));
+
+        var theirPatient = await CreatePatientAsync(stranger);
+        var theirVisit = await ScheduleAsync(stranger, theirPatient, Utc(2026, 6, 13, 14, 0));
+        await CreateNoteAsync(stranger, theirVisit);
+
+        var day = await michelle.GetFromJsonAsync<DayScheduleDto>("/appointments/day/2026-06-13");
+
+        Assert.NotNull(day);
+        Assert.Empty(day.Visits);
+    }
+
+    private static async Task<Guid> ScheduleAsync(HttpClient client, Guid patient, DateTime startUtc)
+    {
+        using var response = await client.PostAsJsonAsync("/appointments", Visit(patient, startUtc));
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<ScheduledDto>())!.PublicId;
+    }
+
+    private static async Task<NoteDto> CreateNoteAsync(HttpClient client, Guid visitPublicId)
+    {
+        using var response = await client.PostAsJsonAsync("/notes",
+            new CreateNoteRequest(visitPublicId, "Mum reports steady progress.", "", "", ""));
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<NoteDto>())!;
     }
 
     private sealed record ScheduledDto(Guid PublicId, DateTime StartUtc, short DurationMinutes);

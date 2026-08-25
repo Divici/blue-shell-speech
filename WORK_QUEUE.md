@@ -27,7 +27,7 @@ return: every one is a form against an endpoint that already exists and is alrea
 - [x] **1.1 Appointment creation UI** — `/today` and a patient page can schedule a visit.
       Patient picker, type, date/time in practice-local, duration, travel block, notes.
       Surface the 409 conflict message (including the travel-time case) as readable text.
-- [ ] **1.2 Start-a-note entry point** — from a visit on `/today`, create or open its
+- [x] **1.2 Start-a-note entry point** — from a visit on `/today`, create or open its
       note. Currently `/notes/[publicId]` is reachable only by typing a URL.
 - [ ] **1.3 Goals UI** — list, add, mark met, discontinue, on a patient page. AAC fields
       appear only when the domain is AAC (the aggregate and a CHECK both enforce it).
@@ -44,6 +44,14 @@ return: every one is a form against an endpoint that already exists and is alrea
 - [ ] **1.8 `/health/ready` dependency checks** — register SQL and blob under the "ready"
       tag. Removes the `TODO(slice 3)` in `Program.cs`, and **flips the test that pins
       zero checks** — that failure is the reminder, by design.
+- [ ] **1.9 Four failing `mobile-safari` E2E tests on the public site** — pre-existing,
+      confirmed against a clean tree while working 1.2, so not a regression from any
+      recent slice. `homepage.spec.ts:63` and `:212` cannot find the header's `About`
+      link at an iPhone 14 viewport; `:172` and `:183` (consultation submissions) fail
+      only under full-suite parallel load. **A suite with known reds stops being a
+      signal** — either the nav is genuinely unreachable on a phone, which is a real
+      defect on the page parents actually land on, or the test is desktop-shaped like the
+      one in D040.
 
 ## Phase 2 — Slice 6, dictation
 
@@ -147,6 +155,7 @@ Do not attempt these. Recorded so nothing is silently dropped.
 Append one line per completed task: date, task id, commit sha.
 
 - 2026-08-25 · 1.1 appointment creation UI · practice-local to UTC conversion tested across both DST boundaries; 409 conflict surfaces the clashing visit time
+- 2026-08-24 · 1.2 start-a-note entry point · `DayVisit` carries the current note's id and status, resolved in the day query as one OUTER APPLY rather than a request per card; `startNote` server action creates the draft and treats the API's 409 as "open the one that exists", so a duplicate clinical record stays impossible outside the UI too
 
 ---
 

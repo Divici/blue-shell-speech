@@ -80,6 +80,28 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
         return (await noteResponse.Content.ReadFromJsonAsync<NoteDto>())!;
     }
 
+    /// <summary>
+    /// The visit a note hangs off. Read straight from the database because the note DTO
+    /// deliberately does not carry it — a note's public id is the only handle the UI needs.
+    /// </summary>
+    private async Task<Guid> AppointmentPublicIdAsync(Guid notePublicId)
+    {
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        // IgnoreQueryFilters: a test scope has no request and therefore no provider
+        // context, so the tenancy filter correctly matches nothing.
+        var appointmentId = await db.ClinicalNotes.IgnoreQueryFilters().AsNoTracking()
+            .Where(n => n.PublicId == notePublicId)
+            .Select(n => n.AppointmentId)
+            .SingleAsync();
+
+        return await db.Appointments.IgnoreQueryFilters().AsNoTracking()
+            .Where(a => a.Id == appointmentId)
+            .Select(a => a.PublicId)
+            .SingleAsync();
+    }
+
     // --------------------------------------------------------------- lifecycle
 
     [Fact]
@@ -214,7 +236,22 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
         using var client = ClientFor(await SeedProviderAsync());
         var draft = await SeedDraftAsync(client);
 
-        // A second note for the same appointment is refused by the API…
+        /*
+         * A second note for the same appointment is refused by the API…
+         *
+         * This POST used to be missing: the comment claimed the API refused while only
+         * the database assertion below ran. The UI now offers a single "start or open"
+         * action, which makes this the layer that has to hold when two taps race.
+         */
+        var appointmentPublicId = await AppointmentPublicIdAsync(draft.PublicId);
+
+        using var second = await client.PostAsJsonAsync("/notes",
+            new CreateNoteRequest(appointmentPublicId, "Second attempt.", "", "", ""));
+
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
+        Assert.Contains("already has a note", await second.Content.ReadAsStringAsync(),
+            StringComparison.OrdinalIgnoreCase);
+
         using var scope = _factory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
         // IgnoreQueryFilters: a test scope has no request and therefore no provider
@@ -354,6 +391,44 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
 
         Assert.Equal(HttpStatusCode.NotFound, signAttempt.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, historyAttempt.StatusCode);
+    }
+
+    /// <summary>
+    /// Starting a note on someone else's visit must be BYTE-IDENTICAL to starting one on
+    /// a visit that does not exist (D052).
+    ///
+    /// 403 would confirm the visit is real, turning the note entry point into an
+    /// enumeration oracle: guess identifiers, read the status codes, learn which ones
+    /// belong to a patient.
+    /// </summary>
+    [Fact]
+    public async Task Starting_a_note_on_another_providers_visit_reveals_nothing()
+    {
+        using var michelle = ClientFor(await SeedProviderAsync("Michelle"));
+        using var stranger = ClientFor(await SeedProviderAsync("Stranger"));
+
+        var draft = await SeedDraftAsync(michelle);
+        var realVisit = await AppointmentPublicIdAsync(draft.PublicId);
+
+        using var foreign = await stranger.PostAsJsonAsync("/notes",
+            new CreateNoteRequest(realVisit, "", "", "", ""));
+
+        using var absent = await stranger.PostAsJsonAsync("/notes",
+            new CreateNoteRequest(Guid.NewGuid(), "", "", "", ""));
+
+        Assert.Equal(HttpStatusCode.NotFound, foreign.StatusCode);
+        Assert.Equal(absent.StatusCode, foreign.StatusCode);
+        Assert.Equal(
+            await absent.Content.ReadAsStringAsync(),
+            await foreign.Content.ReadAsStringAsync());
+
+        // And nothing was written to the real visit.
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+        var count = await db.ClinicalNotes.IgnoreQueryFilters().AsNoTracking()
+            .CountAsync(n => n.PublicId == draft.PublicId);
+
+        Assert.Equal(1, count);
     }
 
     private sealed record ScheduledDto(Guid PublicId, DateTime StartUtc, short DurationMinutes);

@@ -21,6 +21,15 @@ export interface DayVisit {
   travelBlockMinutes: number | null;
   mileage: number | null;
   notes: string | null;
+  /*
+   * The CURRENT clinical note for this visit, or null if it has not been documented yet.
+   *
+   * Carried on the day payload deliberately: the schedule needs to offer "open the note"
+   * or "start one" per visit, and asking per card would be a request per visit through
+   * the BFF to a container that scales to zero. One call answers the whole day.
+   */
+  notePublicId: string | null;
+  noteStatus: string | null;
 }
 
 export interface DaySchedule {
