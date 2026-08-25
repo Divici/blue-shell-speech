@@ -8,9 +8,9 @@
 | 1 | Public website + deployment | **Closed** 2026-08-24 — 14/15; super-review done, 10 findings fixed; persistence deferred to slice 3 |
 | 2 | Provider authentication | **Done** 2026-08-24 — mandatory TOTP, encrypted BFF session, audited |
 | 3 | Patient CRUD end-to-end | **Done** 2026-08-24 — tenancy filter, 404-not-403, audited reads |
-| 4 | Scheduling end-to-end | **In progress** |
-| 5 | Goals + manual SOAP notes | Not started |
-| 6 | Audio capture + transcription | Not started |
+| 4 | Scheduling end-to-end | **Done** 2026-08-24 — travel-aware conflicts, local-day view |
+| 5 | Goals + manual SOAP notes | **Done** 2026-08-25 — trigger-enforced immutability, versioned amendments |
+| 6 | Audio capture + transcription | **In progress** |
 | 7 | Structured extraction + validation | Not started |
 | 8 | SOAP generation + approval | Not started |
 | 9 | Audit / capacity / security hardening | Not started |
