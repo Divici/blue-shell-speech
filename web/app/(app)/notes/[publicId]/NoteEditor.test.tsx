@@ -109,9 +109,15 @@ describe("NoteEditor discard control", () => {
    * marked Amended with IsCurrent = 0. Offering the tap leads a clinician to a refusal she
    * had no reason to expect, on a screen that told her the opposite.
    *
-   * Control: NoteEditor.isEmptyNote — the `!note.isAmendment` clause.
-   * Deleted → red on `expect(discardControl()).not.toBeInTheDocument()`, "expected null
-   * not to be in the document" inverted: the button is found.
+   * Control: NoteEditor.isEmptyNote — the `if (note.isAmendment) return false;` line.
+   * Deleted → red on `expect(discardControl()).not.toBeInTheDocument()`:
+   * "expected document not to contain element, found <button … >Discard this empty
+   * note</button> instead".
+   *
+   * The line this used to name — `!note.isAmendment` — is not in the file and never was,
+   * and the message it quoted is not the one the deletion produces. D070's whole argument
+   * is that the sentence cannot be written without running the deletion; it was written
+   * without running the deletion, in the commit that introduced D070.
    */
   it("is absent on a cleared amendment", () => {
     render(

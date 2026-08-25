@@ -45,7 +45,7 @@ public sealed class ProviderAuthenticator(
 
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
-                metadata: "reason=unknown-email"), ct);
+                metadata: "reason=unknown-email"));
 
             return new PasswordResult(PasswordOutcome.InvalidCredentials);
         }
@@ -55,7 +55,7 @@ public sealed class ProviderAuthenticator(
             var until = await userManager.GetLockoutEndDateAsync(user);
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
-                actorUserId: user.Id, metadata: "reason=locked-out"), ct);
+                actorUserId: user.Id, metadata: "reason=locked-out"));
 
             return new PasswordResult(
                 PasswordOutcome.LockedOut,
@@ -69,7 +69,7 @@ public sealed class ProviderAuthenticator(
 
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
-                actorUserId: user.Id, metadata: "reason=bad-password"), ct);
+                actorUserId: user.Id, metadata: "reason=bad-password"));
 
             return new PasswordResult(PasswordOutcome.InvalidCredentials);
         }
@@ -82,7 +82,7 @@ public sealed class ProviderAuthenticator(
         {
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Denied,
-                actorUserId: user.Id, metadata: "reason=inactive-provider"), ct);
+                actorUserId: user.Id, metadata: "reason=inactive-provider"));
 
             return new PasswordResult(PasswordOutcome.Inactive);
         }
@@ -97,7 +97,7 @@ public sealed class ProviderAuthenticator(
         }
 
         await audit.WriteAsync(AuditEvent.Record(
-            AuditEventType.MfaChallenged, AuditOutcome.Success, actorUserId: user.Id), ct);
+            AuditEventType.MfaChallenged, AuditOutcome.Success, actorUserId: user.Id));
 
         return new PasswordResult(PasswordOutcome.RequiresMfa, user.Id);
     }
@@ -121,7 +121,7 @@ public sealed class ProviderAuthenticator(
             await userManager.AccessFailedAsync(user);
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
-                actorUserId: user.Id, metadata: "reason=bad-mfa-code"), ct);
+                actorUserId: user.Id, metadata: "reason=bad-mfa-code"));
 
             return new MfaResult(false);
         }
@@ -143,13 +143,13 @@ public sealed class ProviderAuthenticator(
             await userManager.AccessFailedAsync(user);
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
-                actorUserId: user.Id, metadata: "reason=bad-recovery-code"), ct);
+                actorUserId: user.Id, metadata: "reason=bad-recovery-code"));
 
             return new MfaResult(false);
         }
 
         await audit.WriteAsync(AuditEvent.Record(
-            AuditEventType.RecoveryCodeUsed, AuditOutcome.Success, actorUserId: user.Id), ct);
+            AuditEventType.RecoveryCodeUsed, AuditOutcome.Success, actorUserId: user.Id));
 
         return await CompleteSignInAsync(user, usedRecoveryCode: true, ct);
     }
@@ -200,7 +200,7 @@ public sealed class ProviderAuthenticator(
         var codes = await userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, 10);
 
         await audit.WriteAsync(AuditEvent.Record(
-            AuditEventType.MfaEnrolled, AuditOutcome.Success, actorUserId: user.Id), ct);
+            AuditEventType.MfaEnrolled, AuditOutcome.Success, actorUserId: user.Id));
 
         return new MfaEnrolmentResult(true, codes?.ToList() ?? []);
     }
@@ -219,7 +219,7 @@ public sealed class ProviderAuthenticator(
 
         await audit.WriteAsync(AuditEvent.Record(
             AuditEventType.LoginSucceeded, AuditOutcome.Success,
-            actorUserId: user.Id, providerId: provider?.Id), ct);
+            actorUserId: user.Id, providerId: provider?.Id));
 
         var remaining = await userManager.CountRecoveryCodesAsync(user);
 
@@ -253,18 +253,45 @@ public sealed class ProviderAuthenticator(
 ///
 /// Separated so the authenticator does not depend on a DbContext for auditing, and so a
 /// test can assert exactly which events an authentication attempt produced.
+///
+/// NO CANCELLATION TOKEN, AND THAT IS THE CONTROL.
+///
+/// An audit row records something that already happened — a record was read, a deletion
+/// was refused, a password was wrong. The caller going away does not un-happen it, so the
+/// write must not be abandonable, and the surest way to stop a call site handing over the
+/// request's token is to leave it nothing to hand over.
+///
+/// It was a parameter, defaulted, and every one of the twenty-odd call sites passed the
+/// endpoint's `ct` — because that is what you do with a token in scope. D071 changed the
+/// one call site it was looking at and left the rest, which is how a client that sends
+/// `DELETE /notes/{guid}` and drops the connection could walk ten thousand ids and leave
+/// AuditEvents empty. The refusal paths are the worst of them: they write an audit row and
+/// nothing else, so there is no clinical write whose absence would show the loss.
+///
+/// "Fix the call sites" was never going to hold, and the build says so: CA2016 is an error
+/// here, so a call site inside a method that has a token MUST forward it or suppress the
+/// rule one line at a time. With the parameter present, the analyzer enforces the defect.
+/// Removing it is the only version of this fix the toolchain agrees with.
+///
+/// The cost is real and small: a write that cannot be cancelled holds its connection until
+/// the command timeout if the database is wedged, on a request nobody is waiting for. The
+/// alternative is an audit trail with a survivorship bias toward uninterrupted requests,
+/// which is not an audit trail (docs/SECURITY.md §Audit).
 /// </summary>
 public interface IAuditWriter
 {
-    Task WriteAsync(AuditEvent auditEvent, CancellationToken ct = default);
+    Task WriteAsync(AuditEvent auditEvent);
 }
 
 public sealed class AuditWriter(PracticeDbContext db) : IAuditWriter
 {
-    public async Task WriteAsync(AuditEvent auditEvent, CancellationToken ct = default)
+    public async Task WriteAsync(AuditEvent auditEvent)
     {
         db.AuditEvents.Add(auditEvent);
-        await db.SaveChangesAsync(ct);
+
+        // Spelled out rather than left to the default, because it is a decision and not an
+        // omission. See the interface.
+        await db.SaveChangesAsync(CancellationToken.None);
     }
 }
 

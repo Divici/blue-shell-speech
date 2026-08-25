@@ -22,9 +22,19 @@ builder.Services.AddOpenApi();
  * SQL touches clinical prose. docs/THREAT_MODEL.md boundary 2 is the `web` → `api` hop;
  * an error body crosses it exactly like a log line does, and the same rule applies.
  *
- * The default writer emits type, title, status and a traceId. It deliberately carries no
- * exception message: the message is for the log, the traceId is for the human, and the
- * two are joined by Serilog rather than by handing the caller the stack.
+ * The default writer emits type, title, status and a traceId, and deliberately no
+ * exception message: the message belongs in the log, the traceId is what a human can
+ * quote, and neither is the caller's stack trace.
+ *
+ * KNOWN GAP, tracked as WORK_QUEUE 4.1: nothing correlates the two yet. This comment used
+ * to say the traceId and the message "are joined by Serilog" — there is no Serilog here,
+ * no package, no sink, and no IncludeScopes, so the id Michelle would read off her screen
+ * cannot currently be looked up anywhere. That is the D072 defect class exactly: a control
+ * described in a comment and absent from the code reads as STRONGER than no control at
+ * all, because the next person checks whether the problem was considered rather than
+ * whether it was solved. Written down here as missing rather than implemented in passing,
+ * because 4.1 owns the destructuring policy that keeps PHI out of those logs and doing
+ * half of it first is how PHI reaches a sink.
  *
  * This does NOT turn expected refusals into errors. A note that is signed, or written in,
  * or superseding another, still answers 409 with a sentence written for a clinician —

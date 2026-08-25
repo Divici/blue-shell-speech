@@ -128,8 +128,17 @@ public sealed class ClinicalNote : Entity
     {
         if (Status != NoteStatus.Draft)
         {
-            throw new InvalidOperationException(
-                "This note is signed. Create an amendment instead — a signed clinical record is never edited.");
+            /*
+             * Two refusals, because "create an amendment instead" is only true of one of
+             * them. Amend() rejects a version that has already been superseded, so the
+             * single sentence sent whoever was reading a superseded v1 to an action that
+             * answered with a second refusal. The endpoint returns this wording verbatim
+             * to the clinician (NoteEndpoints.UpdateDraft), so a refusal that names an
+             * impossible next step is a screen telling her something untrue.
+             */
+            throw new InvalidOperationException(Status == NoteStatus.Amended
+                ? "This version was signed and has since been replaced by a later one. It is kept exactly as it was — corrections go on the current version."
+                : "This note is signed. Create an amendment instead — a signed clinical record is never edited.");
         }
 
         Subjective = Trim(subjective);

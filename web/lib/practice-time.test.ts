@@ -120,33 +120,61 @@ describe("round-tripping", () => {
  * control: the reading is right whether or not the designator survives the trip.
  */
 describe("parseApiInstant", () => {
+  /**
+   * Control: parseApiInstant — the `Z` alternative in the designator test.
+   * Deleted (regex narrowed to `/(?:[+-]\d\d:?\d\d)$/`, so a value already ending in Z
+   * gets a second one) → red with "RangeError: Invalid time value" on `.toISOString()`.
+   */
   it("reads a timestamp that carries its designator", () => {
     expect(parseApiInstant("2026-06-15T13:00:00Z").toISOString()).toBe(
       "2026-06-15T13:00:00.000Z",
     );
   });
 
-  /** The shape the endpoint actually served. It means the same instant. */
+  /**
+   * The shape the endpoint actually served. It means the same instant.
+   *
+   * Control: parseApiInstant — the `` `${value}Z` `` branch.
+   * Deleted (back to a bare `new Date(value)`) → red with
+   * "expected '2026-06-15T17:00:00.000Z' to be '2026-06-15T13:00:00.000Z'", four hours
+   * out, which is the whole defect.
+   */
   it("reads a designator-less timestamp as UTC, never as local time", () => {
     expect(parseApiInstant("2026-06-15T13:00:00").toISOString()).toBe(
       "2026-06-15T13:00:00.000Z",
     );
   });
 
+  /**
+   * Control: parseApiInstant — the `` `${value}Z` `` branch.
+   * Deleted → red with "expected 1781542800000 to be 1781528400000".
+   */
   it("gives the same instant for both spellings", () => {
     expect(parseApiInstant("2026-06-15T13:00:00").getTime()).toBe(
       parseApiInstant("2026-06-15T13:00:00Z").getTime(),
     );
   });
 
-  /** SQL Server's datetime2(3) round-trips milliseconds, so the fractional form arrives too. */
+  /**
+   * SQL Server's datetime2(3) round-trips milliseconds, so the fractional form arrives too.
+   *
+   * Control: parseApiInstant — the `` `${value}Z` `` branch.
+   * Deleted → red with "expected '2026-06-15T17:00:00.442Z' to be
+   * '2026-06-15T13:00:00.442Z'": the milliseconds survive either way, the hour does not.
+   */
   it("keeps sub-second precision", () => {
     expect(parseApiInstant("2026-06-15T13:00:00.442").toISOString()).toBe(
       "2026-06-15T13:00:00.442Z",
     );
   });
 
-  /** An explicit offset is already unambiguous and must not be re-stamped. */
+  /**
+   * An explicit offset is already unambiguous and must not be re-stamped.
+   *
+   * Control: parseApiInstant — the `[+-]\d\d:?\d\d` alternative in the designator test.
+   * Deleted (regex narrowed to `/(?:Z)$/`, so "-04:00Z" is produced) → red with
+   * "RangeError: Invalid time value".
+   */
   it("leaves an explicit offset alone", () => {
     expect(parseApiInstant("2026-06-15T09:00:00-04:00").toISOString()).toBe(
       "2026-06-15T13:00:00.000Z",

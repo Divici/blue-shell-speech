@@ -35,7 +35,15 @@ If deleting the control leaves the test green, one of two things is true and bot
 knowing before an incident rather than during one: the assertion is aimed somewhere else, or
 a second control is quietly covering for the first. Both usually mean the honest test case is
 unreachable through the API and has to be constructed directly — see D066 for two worked
-examples.
+examples, and `An_empty_signed_note_cannot_be_deleted_by_raw_sql` for a third: the DELETE
+trigger's `Status` clause and its emptiness clauses each cover for the other on every note the
+API can produce, so isolating one needed a signed note with four empty sections planted by raw
+`INSERT`, which `Sign()` will not create.
+
+**A `Control:` line names a symbol, so moving the symbol invalidates the line.** Re-run the
+deletion against the new home as part of the move. Nothing mechanical will notice: the line is
+a comment and the test stays green either way. Same rule for renaming a clause, changing the
+order of a branch, or lifting a block into a helper (D077).
 
 **Deliberately not automated.** A mutation harness in CI would gate the build on a score,
 which is the coverage-threshold failure mode this file rejects, and CLAUDE.md keeps quality

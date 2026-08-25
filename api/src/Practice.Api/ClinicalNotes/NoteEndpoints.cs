@@ -195,7 +195,7 @@ public static class NoteEndpoints
         await audit.WriteAsync(AuditEvent.Record(
             AuditEventType.PatientViewed, AuditOutcome.Success,
             providerId: provider.ProviderId,
-            entityType: nameof(ClinicalNote), entityPublicId: note.PublicId), ct);
+            entityType: nameof(ClinicalNote), entityPublicId: note.PublicId));
 
         return Results.Ok(NoteDto.From(note));
     }
@@ -240,7 +240,7 @@ public static class NoteEndpoints
             AuditEventType.PatientViewed, AuditOutcome.Success,
             providerId: provider.ProviderId,
             entityType: nameof(ClinicalNote), entityPublicId: publicId,
-            metadata: $"versions={versions.Count}"), ct);
+            metadata: $"versions={versions.Count}"));
 
         return Results.Ok(versions.Select(NoteDto.From).ToList());
     }
@@ -363,26 +363,56 @@ public static class NoteEndpoints
              * (D052) — so the audit table is the only place the attempt can be recorded
              * at all. The id written down is one the caller already held.
              */
-            await AuditRefusedDiscardAsync(audit, provider, publicId, "not-found", ct);
+            await AuditRefusedDiscardAsync(audit, provider, publicId, "not-found");
             return Results.NotFound();
         }
 
         /*
-         * An amendment, asked about HERE as well as in the aggregate.
+         * THE ORDER OF THE THREE REFUSALS IS THE ANSWER TO TWO SEPARATE QUESTIONS.
          *
-         * Not a duplicate of CanBeDiscarded's clause — a restatement, on the D064
-         * principle that this rule is written three times so no single loosening removes
-         * it. It also has to come FIRST: a cleared amendment is a Draft with four empty
-         * sections, so the Draft branch below would tell a clinician the note "has
-         * something written in it" and ask her to clear sections that are already clear.
+         * Status first, then lineage, then content — because the audit vocabulary
+         * describes WHAT THE ROW IS and the sentence describes WHAT TO DO NEXT, and
+         * asking about lineage first got both wrong for the same note.
          *
-         * The sequence it closes: sign v1, amend it, empty the amendment, delete it.
-         * Every call supported, and the result was a visit with no current note and a
-         * signed record nothing linked to.
+         *   status  — signed or superseded. A signed amendment is a signed clinical
+         *             record; it used to audit as `amendment`, so a query for "attempts to
+         *             delete a signed record" was short by exactly the set of amended —
+         *             i.e. contested — records, and the copy asked a clinician to correct
+         *             and sign a note that was already signed.
+         *   lineage — a DRAFT that supersedes something: an amendment being written. This
+         *             still has to come before the content branch, because clearing an
+         *             amendment is an ordinary edit and leaves a Draft with four empty
+         *             sections — the branch below would then tell her the note "has
+         *             something written in it" and ask her to clear what is already clear.
+         *             The sequence D069 closed: sign v1, amend, empty, delete.
+         *   content — everything left: a plain draft somebody has written in.
+         *
+         * Written HERE as well as in the aggregate on the D064 principle that the rule
+         * exists in three places so no single loosening removes it.
          */
+        if (note.Status != NoteStatus.Draft)
+        {
+            await AuditRefusedDiscardAsync(audit, provider, publicId, "signed");
+
+            /*
+             * The advice has to be one the API will accept.
+             *
+             * Amend() refuses a version that has already been superseded — the corrections
+             * go on the current one — so telling a superseded v1 to "amend it instead"
+             * walks a clinician straight into a second refusal, at which point the record
+             * looks broken rather than the version looking wrong.
+             */
+            return Results.Conflict(new
+            {
+                message = note.IsCurrent
+                    ? "This note is signed. A signed clinical record is never deleted — amend it instead."
+                    : "This version was signed and has since been replaced by a later one. It is kept exactly as it was, and never deleted — open the current version if something still needs correcting.",
+            });
+        }
+
         if (note.SupersedesNoteId is not null)
         {
-            await AuditRefusedDiscardAsync(audit, provider, publicId, "amendment", ct);
+            await AuditRefusedDiscardAsync(audit, provider, publicId, "amendment");
 
             return Results.Conflict(new
             {
@@ -392,17 +422,14 @@ public static class NoteEndpoints
 
         if (!note.CanBeDiscarded)
         {
-            var draft = note.Status == NoteStatus.Draft;
-            await AuditRefusedDiscardAsync(
-                audit, provider, publicId, draft ? "has-content" : "signed", ct);
+            // Everything else has been ruled out above, so this is a plain draft with
+            // something written in it. "That is not allowed" would tell a clinician
+            // nothing about which rule she met.
+            await AuditRefusedDiscardAsync(audit, provider, publicId, "has-content");
 
-            // Two reasons, two sentences. "That is not allowed" tells a clinician nothing
-            // about which rule she met.
             return Results.Conflict(new
             {
-                message = draft
-                    ? "This note has something written in it, so it is kept. Clear the sections and save if you meant to start again."
-                    : "This note is signed. A signed clinical record is never deleted — amend it instead.",
+                message = "This note has something written in it, so it is kept. Clear the sections and save if you meant to start again.",
             });
         }
 
@@ -422,37 +449,56 @@ public static class NoteEndpoints
          * IAuditWriter owns its own save, deliberately, so that an audit row is never
          * silently batched in with whatever else the caller happened to be tracking.
          *
-         * Wrapped in the execution strategy because the connection retries on transient
-         * failure (AddInfrastructure), and a retrying strategy refuses a user-initiated
-         * transaction it did not open — it has to own the retry boundary, otherwise a
-         * retry would resume inside a transaction that no longer exists.
+         * WriteAtomicallyAsync rather than an inline BeginTransactionAsync, because the
+         * retry boundary, the change-tracker reset, and the commit token are three
+         * separate ways to get this wrong and none of them shows up in a passing run. The
+         * reasoning for each is on the helper; the contract it places on this block is
+         * that the block RUNS MORE THAN ONCE and must own everything it writes.
          */
         var version = note.VersionNumber;
-        var strategy = db.Database.CreateExecutionStrategy();
 
-        await strategy.ExecuteAsync(async () =>
+        await db.WriteAtomicallyAsync(async attempt =>
         {
-            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            /*
+             * RE-READ, rather than reusing the entity read above.
+             *
+             * The change tracker is cleared at the top of every attempt, so `note` is
+             * detached in here — and it has to be. A previous attempt may have deleted
+             * this row, had its audit save fail, and rolled the delete back; carrying its
+             * tracked entities forward is exactly how one deletion produced two audit
+             * rows in a table nothing can UPDATE or DELETE.
+             */
+            var doomed = await db.ClinicalNotes
+                .SingleOrDefaultAsync(n => n.PublicId == publicId, attempt);
 
-            db.ClinicalNotes.Remove(note);
-            await db.SaveChangesAsync(ct);
+            /*
+             * Already gone. The only route to this state is a second DELETE for the same
+             * note committing while this one waited on its lock — a double tap, in other
+             * words — and that request wrote the NoteDiscarded row for the removal. One
+             * deletion, one row: writing a second here would say it happened twice.
+             */
+            if (doomed is null) return;
 
+            db.ClinicalNotes.Remove(doomed);
+            await db.SaveChangesAsync(attempt);
+
+            /*
+             * Constructed HERE, on each attempt, and not hoisted above the lambda.
+             *
+             * Hoisting looks like the tidier fix and closes only half the hole. It stops
+             * the double insert after a failed SAVE — the same instance is re-Added and
+             * stays one Added entry — but a commit that fails after a successful save
+             * leaves the row with its store-generated key already populated, and EF
+             * inserts an explicit identity value the next time round rather than a new
+             * row. The reset change tracker is the control; a fresh entity is what makes
+             * the reset safe.
+             */
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.NoteDiscarded, AuditOutcome.Success,
                 providerId: provider.ProviderId,
                 entityType: nameof(ClinicalNote), entityPublicId: publicId,
-                metadata: $"version={version}"), ct);
-
-            /*
-             * Committed on CancellationToken.None, alone in this method.
-             *
-             * Everything above is abandonable: if the request goes away, the transaction
-             * disposes without committing and nothing happened. Once both writes are
-             * staged the decision is made, and abandoning the commit is the one action
-             * that could still leave the pair half-applied.
-             */
-            await transaction.CommitAsync(CancellationToken.None);
-        });
+                metadata: $"version={version}"));
+        }, ct);
 
         /*
          * A body, not 204.
@@ -487,13 +533,12 @@ public static class NoteEndpoints
         IAuditWriter audit,
         IProviderContext provider,
         Guid publicId,
-        string reason,
-        CancellationToken ct) =>
+        string reason) =>
         audit.WriteAsync(AuditEvent.Record(
             AuditEventType.NoteDiscarded, AuditOutcome.Failure,
             providerId: provider.ProviderId,
             entityType: nameof(ClinicalNote), entityPublicId: publicId,
-            metadata: $"refused;reason={reason}"), ct);
+            metadata: $"refused;reason={reason}"));
 
     private static async Task<IResult> SignNote(
         Guid publicId,
@@ -528,7 +573,7 @@ public static class NoteEndpoints
             AuditEventType.NoteSigned, AuditOutcome.Success,
             providerId: provider.ProviderId,
             entityType: nameof(ClinicalNote), entityPublicId: note.PublicId,
-            metadata: $"version={note.VersionNumber}"), ct);
+            metadata: $"version={note.VersionNumber}"));
 
         return Results.Ok(NoteDto.From(note));
     }
@@ -578,7 +623,7 @@ public static class NoteEndpoints
             AuditEventType.NoteAmended, AuditOutcome.Success,
             providerId: provider.ProviderId,
             entityType: nameof(ClinicalNote), entityPublicId: amendment.PublicId,
-            metadata: $"version={amendment.VersionNumber};supersedes={note.PublicId}"), ct);
+            metadata: $"version={amendment.VersionNumber};supersedes={note.PublicId}"));
 
         return Results.Created($"/notes/{amendment.PublicId}", NoteDto.From(amendment));
     }

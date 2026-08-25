@@ -39,10 +39,12 @@ async function clientKey(): Promise<string> {
  * A Server Action, so validation runs on the server whether or not JavaScript is
  * available. Client-side validation on this form is a convenience; this is the control.
  *
- * NOTHING FROM THIS FORM IS LOGGED. It carries a child's first name and a parent's
- * description of their developmental concerns. Structured logs carry IDs and correlation
- * IDs only (docs/SECURITY.md) — a validation failure is logged as "which fields failed",
- * never as what the parent wrote.
+ * NOTHING FROM THIS FORM IS LOGGED — and there is no logging here at all, which is the
+ * honest version of that sentence. It carries a child's first name and a parent's
+ * description of their developmental concerns. This comment used to go on to describe a
+ * validation failure being "logged as which fields failed"; nothing in this file writes a
+ * log line, so that described a mechanism rather than the code (the D072 defect class).
+ * When one arrives it carries field names only, never values, per docs/SECURITY.md.
  */
 export async function submitConsultation(
   _previous: ConsultationState,

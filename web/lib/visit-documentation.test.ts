@@ -146,13 +146,26 @@ describe("documentationBlockedReason, against a recorded day payload", () => {
     }
   });
 
+  /**
+   * Control: documentationBlockedReason — the `visit.status === "Cancelled"` branch.
+   * Deleted → red on the toMatch, "AssertionError: expected 'This visit has not started
+   * yet. Its n…' to match /cancelled/i" — the clock branch answers instead, and a
+   * cancelled visit is offered its note the moment its start time passes.
+   */
   it("still refuses a cancelled visit from the same payload", () => {
     expect(documentationBlockedReason(recordedVisit(SERVED, 1), NINE_AM_ET)).toMatch(
       /cancelled/i,
     );
   });
 
-  /** One minute before the recorded start, the note has genuinely not opened yet. */
+  /**
+   * One minute before the recorded start, the note has genuinely not opened yet.
+   *
+   * Control: documentationBlockedReason — the `? NOT_STARTED` arm of the final comparison.
+   * Deleted (replaced with `null`) → red on the toMatch, "TypeError: .toMatch() expects to
+   * receive a string, but got object" — null, meaning the card would offer to document a
+   * visit that has not begun.
+   */
   it("holds the note back until the visit begins", () => {
     const oneMinuteEarly = new Date(NINE_AM_ET.getTime() - 60_000);
 

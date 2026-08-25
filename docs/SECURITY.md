@@ -165,7 +165,18 @@ current note and the signed version it supersedes reachable by nothing the produ
 
 **The delete and its audit row are one transaction.** They were two saves on the request's
 cancellation token, so backgrounding the app mid-request removed the row and abandoned the
-record of it. The only explicit transaction in the API is here, for that reason (D071).
+record of it. The only explicit transaction in the API is here, for that reason (D071), and it
+goes through `AtomicWrites.WriteAtomicallyAsync` — the transaction inside the retrying
+execution strategy, the change tracker reset on every attempt, and the commit on
+`CancellationToken.None`. The reset is not tidiness: a retry re-ran the body against a change
+tracker still holding what the failed attempt had staged, and wrote **two** `NoteDiscarded`
+rows for one deletion into a table nothing can UPDATE or DELETE (D075).
+
+**No audit write is cancellable.** `IAuditWriter.WriteAsync` takes no `CancellationToken`, and
+`AuditWriter` saves on `CancellationToken.None`. An audit row records something that already
+happened; the caller going away does not un-happen it. This is a property of the seam rather
+than a habit at the call sites, because with a token parameter present CA2016 requires every
+call site inside a method that has one to forward it — the analyzer enforces the defect (D075).
 
 **Refused deletes are audited too**, as `NoteDiscarded` with `AuditOutcome.Failure` and a
 fixed-vocabulary reason: `not-found`, `amendment`, `has-content`, `signed`. A log holding only
@@ -173,6 +184,12 @@ the deletions that succeeded cannot answer "did someone walk the note ids with D
 is the question it exists for. The `not-found` rows are the ones that answer it — the response
 deliberately cannot distinguish "not yours" from "does not exist" (404 either way), so the
 audit table is the only place the attempt is recorded at all.
+
+The reason describes **what the row is, not how it came to exist**: a signed amendment audits
+as `signed`, because it is a signed clinical record. `amendment` means a draft amendment being
+written, which is a different thing to have tried to delete. Asking about lineage first made
+every signed note from v2 onward audit as `amendment`, so a count of attempts on signed records
+was short by exactly the set of amended — i.e. contested — records (D076).
 
 Unhandled failures answer with RFC 9457 problem details and no stack trace
 (`AddProblemDetails` + `UseExceptionHandler`, registered before the automatic developer

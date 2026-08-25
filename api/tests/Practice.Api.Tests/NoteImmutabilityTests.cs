@@ -1,8 +1,14 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Practice.Api.Auth;
 using Practice.Api.ClinicalNotes;
 using Practice.Api.Patients;
@@ -839,8 +845,17 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// A DELETE that never went through the application — a cleanup script, a bulk
     /// operation, SSMS — must not be able to remove a real clinical record.
     ///
-    /// Control: TR_ClinicalNotes_PreventDeletingRealNotes — the Status clause.
-    /// Deleted → red on Assert.ThrowsAnyAsync, "No exception was thrown".
+    /// Control: TR_ClinicalNotes_PreventDeletingRealNotes — the emptiness clauses.
+    /// Deleted (all four ISNULL comparisons) → red on Assert.ThrowsAnyAsync,
+    /// "Assert.ThrowsAny() Failure: No exception was thrown".
+    ///
+    /// NOT the Status clause, although this test's name is about a signed note and its
+    /// docstring used to say so. Every signed note the API can produce has content in it,
+    /// because Sign() refuses an empty one — so the emptiness clauses answer first and the
+    /// Status clause can be deleted with this test still green. Found by deleting it. The
+    /// D066 F4 shape again: a second control quietly covering for the first, and neither
+    /// isolated by the test that names one of them.
+    /// An_empty_signed_note_cannot_be_deleted_by_raw_sql below is the one that isolates it.
     /// </summary>
     [Fact]
     public async Task A_signed_note_cannot_be_deleted_by_raw_sql()
@@ -861,6 +876,80 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
         Assert.Equal(1, await NoteCountForVisitAsync(visit));
     }
 
+    /// <summary>
+    /// The Status clause on its own, against a row the application cannot create.
+    ///
+    /// Signed, and empty in all four sections. Sign() refuses that combination, so the only
+    /// way to reach it is a raw INSERT — the same move D066 needed for the tenancy filters,
+    /// and for the same reason: a test that can only construct legal states cannot prove
+    /// what happens to an illegal one. The row is what a bad migration, a bulk load, or a
+    /// script run at 11pm would leave behind, and the trigger is the guard that has to hold
+    /// when the aggregate and the endpoint were never involved.
+    ///
+    /// CK_ClinicalNotes_SignedNotesAreAttested still applies, so the planted row carries a
+    /// signature time, a signer, and a hash. They are synthetic and the hash is a single
+    /// zero byte — this row exists to be refused, not to be read.
+    ///
+    /// Control: TR_ClinicalNotes_PreventDeletingRealNotes — the `d.[Status] &lt;&gt; 1` clause.
+    /// Deleted (replaced with `1 = 0`) → red on Assert.ThrowsAnyAsync,
+    /// "Assert.ThrowsAny() Failure: No exception was thrown".
+    /// </summary>
+    [Fact]
+    public async Task An_empty_signed_note_cannot_be_deleted_by_raw_sql()
+    {
+        using var client = ClientFor(await SeedProviderAsync());
+        var visit = await SeedVisitAsync(client);
+        var planted = await PlantEmptySignedNoteAsync(visit);
+
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await db.Database.ExecuteSqlAsync(
+                $"DELETE FROM dbo.ClinicalNotes WHERE PublicId = {planted}"));
+
+        Assert.Contains("cannot be deleted", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, await NoteCountForVisitAsync(visit));
+    }
+
+    /// <summary>
+    /// Writes a signed note with nothing in any section, which Sign() will not do.
+    ///
+    /// Column list written by hand, so it breaks when the table changes shape. That is the
+    /// price of testing a state the application refuses to create (D066), and it is the
+    /// right price.
+    /// </summary>
+    private async Task<Guid> PlantEmptySignedNoteAsync(Guid visitPublicId)
+    {
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var visit = await db.Appointments.IgnoreQueryFilters().AsNoTracking()
+            .Where(a => a.PublicId == visitPublicId)
+            .Select(a => new { a.Id, a.ProviderId, a.PatientId })
+            .SingleAsync();
+
+        var publicId = Guid.NewGuid();
+
+        await db.Database.ExecuteSqlAsync($"""
+            INSERT INTO dbo.ClinicalNotes
+                (PublicId, ProviderId, PatientId, AppointmentId, VersionNumber,
+                 IsCurrent, Status, Subjective, Objective, Assessment, [Plan],
+                 Origin, CreatedAtUtc, SignedAtUtc, SignedBy, ContentHash)
+            VALUES
+                ({publicId}, {visit.ProviderId}, {visit.PatientId}, {visit.Id}, 1,
+                 1, 2, N'', N'', N'', N'',
+                 1, SYSUTCDATETIME(), SYSUTCDATETIME(), N'Michelle', 0x00)
+            """);
+
+        return publicId;
+    }
+
+    /// <summary>
+    /// Control: TR_ClinicalNotes_PreventDeletingRealNotes — the emptiness clauses.
+    /// Deleted (all four ISNULL comparisons) → red on Assert.ThrowsAnyAsync,
+    /// "Assert.ThrowsAny() Failure: No exception was thrown".
+    /// </summary>
     [Fact]
     public async Task A_draft_with_content_cannot_be_deleted_by_raw_sql()
     {
@@ -911,7 +1000,7 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// </summary>
     private sealed class UnwritableAuditWriter : IAuditWriter
     {
-        public Task WriteAsync(AuditEvent auditEvent, CancellationToken ct = default) =>
+        public Task WriteAsync(AuditEvent auditEvent) =>
             throw new InvalidOperationException("The audit table is unavailable.");
     }
 
@@ -927,9 +1016,13 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// timing removed. If the delete is still committed after the audit write fails, the
     /// two were never atomic.
     ///
-    /// Control: DiscardDraft's BeginTransactionAsync / CommitAsync pair.
-    /// Deleted → red on Assert.Equal(1, NoteCountForVisitAsync), "Expected: 1, Actual: 0"
-    /// — the note is destroyed and nothing records it.
+    /// Control: AtomicWrites.WriteAtomicallyAsync — the BeginTransactionAsync /
+    /// CommitAsync pair the discard's writes run between. (It was inline in DiscardDraft
+    /// when this test was written; the transaction moved to the shared helper with F2, and
+    /// this line was re-verified against the new home rather than assumed.)
+    /// Deleted → red on Assert.Equal(1, NoteCountForVisitAsync), "Assert.Equal() Failure:
+    /// Values differ, Expected: 1, Actual: 0" — the note is destroyed and nothing records
+    /// it.
     /// </summary>
     [Fact]
     public async Task A_note_survives_when_its_audit_row_cannot_be_written()
@@ -992,6 +1085,11 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
         Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
 
         var body = await response.Content.ReadAsStringAsync();
+
+        // The one handle a human gets. Asserted because the comment on AddProblemDetails
+        // says the traceId is what Michelle can quote — and a claim about a mechanism is
+        // only worth what pins it (D072).
+        Assert.Contains("traceId", body, StringComparison.Ordinal);
 
         Assert.DoesNotContain("UnwritableAuditWriter", body, StringComparison.Ordinal);
         Assert.DoesNotContain("at Practice.", body, StringComparison.Ordinal);
@@ -1096,6 +1194,492 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
             await foreign.Content.ReadAsStringAsync());
     }
 
+
+    // ------------------------------ the retry the transaction is wrapped in (F2)
+
+    /*
+     * THE TRANSACTION RUNS INSIDE A RETRY, AND A RETRY RUNS THE BODY AGAIN.
+     *
+     * AddInfrastructure enables EnableRetryOnFailure because Azure SQL serverless
+     * auto-pauses and the first query after a pause fails while the database wakes up.
+     * That is the NORMAL case for this deployment, not an exotic one — which makes "what
+     * does the second attempt do" a question about ordinary Tuesday behaviour.
+     *
+     * A retry is only safe if the body is idempotent, and a DbContext carries state
+     * across attempts: a SaveChanges that FAILED never calls AcceptAllChanges, so
+     * everything it staged is still tracked, still Added, and gets inserted again by the
+     * next attempt. Two audit rows for one deletion, in a table the application principal
+     * cannot UPDATE or DELETE.
+     *
+     * Forced here rather than waited for: a strategy that retries on one marker exception
+     * and an audit writer that raises it once, so the second attempt is a certainty
+     * instead of a Tuesday.
+     */
+
+    /// <summary>A failure the execution strategy below treats as transient. Nothing else does.</summary>
+    private sealed class TransientBlipException()
+        : Exception("A transient failure, raised on purpose.");
+
+    /// <summary>
+    /// Retries on <see cref="TransientBlipException"/> and on nothing else.
+    ///
+    /// Deliberately not SqlServerRetryingExecutionStrategy with an added error number: a
+    /// real transient SQL error cannot be raised on demand, and simulating one by picking
+    /// an error code that SQL Server also raises for other reasons would make the test
+    /// depend on the engine's mood. What is under test is the BODY's behaviour on a
+    /// second attempt, so the trigger for that attempt should be the least interesting
+    /// part of the setup.
+    /// </summary>
+    private sealed class BlipRetryingExecutionStrategy(ExecutionStrategyDependencies dependencies)
+        : ExecutionStrategy(dependencies, maxRetryCount: 3, maxRetryDelay: TimeSpan.FromMilliseconds(10))
+    {
+        protected override bool ShouldRetryOn(Exception exception) =>
+            exception is TransientBlipException;
+    }
+
+    /// <summary>
+    /// Tracks the audit row, then fails the save — once.
+    ///
+    /// The order matters and is the whole point: the entity is Added and the save is what
+    /// breaks, which is exactly the shape of a transient failure against a real database.
+    /// A writer that threw BEFORE tracking anything would leave a clean change tracker and
+    /// prove nothing.
+    /// </summary>
+    private sealed class BlipsOnceAuditWriter(PracticeDbContext db) : IAuditWriter
+    {
+        private bool _blipped;
+
+        public async Task WriteAsync(AuditEvent auditEvent)
+        {
+            db.AuditEvents.Add(auditEvent);
+
+            if (!_blipped)
+            {
+                _blipped = true;
+                throw new TransientBlipException();
+            }
+
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>Swaps in the retrying strategy and the writer that provokes it.</summary>
+    private static void RetryOnceOnATransientBlip(
+        string connectionString, IServiceCollection services)
+    {
+        // AddDbContext uses TryAdd, so the application's own options win unless the
+        // existing registration is removed first.
+        services.RemoveAll<DbContextOptions<PracticeDbContext>>();
+        services.RemoveAll<DbContextOptions>();
+
+        services.AddDbContext<PracticeDbContext>(options =>
+            options.UseSqlServer(connectionString,
+                sql => sql.ExecutionStrategy(deps => new BlipRetryingExecutionStrategy(deps))));
+
+        services.AddScoped<IAuditWriter, BlipsOnceAuditWriter>();
+    }
+
+    /// <summary>
+    /// F2: one deletion leaves one audit row, however many attempts it took.
+    ///
+    /// AuditEvents is append-only by grant — the application principal has no UPDATE and
+    /// no DELETE on it (docs/SECURITY.md) — so a duplicate row is not a cosmetic defect
+    /// that a cleanup script tidies later. It is permanent, and it says a clinician
+    /// deleted the same note twice.
+    ///
+    /// Control: AtomicWrites.WriteAtomicallyAsync — the db.ChangeTracker.Clear() at the
+    /// top of each attempt.
+    /// Deleted → red on Assert.Single, "Assert.Single() Failure: The collection contained
+    /// 2 items".
+    ///
+    /// The re-read and the per-attempt AuditEvent.Record in DiscardDraft are the other
+    /// half of the same rule and are NOT what this test pins: with the tracker cleared,
+    /// re-attaching the stale note still deletes the right row, and the failed save left
+    /// the audit entity without a key. They are named in the helper's contract because the
+    /// next caller's shape will not be this one.
+    /// </summary>
+    [Fact]
+    public async Task A_retried_discard_writes_exactly_one_audit_row()
+    {
+        var providerPublicId = await SeedProviderAsync();
+
+        using var client = ClientFor(providerPublicId);
+        var visit = await SeedVisitAsync(client);
+
+        using var created = await client.PostAsJsonAsync("/notes",
+            new CreateNoteRequest(visit, "", "", "", ""));
+        var note = (await created.Content.ReadFromJsonAsync<NoteDto>())!;
+
+        using var retrying = new PracticeApiFactory(sql.ConnectionString,
+            services => RetryOnceOnATransientBlip(sql.ConnectionString, services));
+        using var retryingClient = retrying.CreateClient();
+        retryingClient.DefaultRequestHeaders.Add(
+            RequestProviderContext.HeaderName, providerPublicId.ToString());
+
+        using var discard = await retryingClient.DeleteAsync($"/notes/{note.PublicId}");
+
+        // The retry is meant to be invisible to the caller: the discard succeeds.
+        discard.EnsureSuccessStatusCode();
+        Assert.Equal(0, await NoteCountForVisitAsync(visit));
+
+        var only = Assert.Single(await DiscardEventsAsync(note.PublicId));
+        Assert.Equal(AuditOutcome.Success, only.Outcome);
+        Assert.Contains("version=1", only.Metadata!, StringComparison.Ordinal);
+    }
+
+    // -------------------------- the audit that outlives the connection (F1)
+
+    /*
+     * AN AUDIT ROW MUST NOT DEPEND ON THE CLIENT STAYING CONNECTED.
+     *
+     * D071 fixed this on the success path and left it on every other one. A DELETE that is
+     * REFUSED writes its row and nothing else — there is no clinical write to carry it —
+     * so with that write on the request's cancellation token, a caller who sends the
+     * request and drops the connection leaves nothing behind at all. Walk ten thousand
+     * note ids that way and AuditEvents is empty, which is precisely the question
+     * docs/SECURITY.md §Audit says the not-found rows exist to answer.
+     *
+     * The same shape was on every other audit write in this API — reads, signatures,
+     * amendments, patient and guardian writes, and every login outcome. It is closed at
+     * the seam rather than at the call sites: IAuditWriter.WriteAsync takes no
+     * CancellationToken, so there is no token left for a caller to hand it.
+     */
+
+    /// <summary>
+    /// A request lifetime whose RequestAborted this test can cancel on demand.
+    ///
+    /// Deliberately NOT TestServer's own feature via HttpContext.Abort(), which also tears
+    /// the response down: that would exercise the harness's disconnect handling alongside
+    /// the property under test, and a failure could not be attributed to either. This
+    /// cancels the token the endpoint is holding and changes nothing else — the client
+    /// dropping the connection, with the timing removed.
+    /// </summary>
+    private sealed class DroppableConnection : IHttpRequestLifetimeFeature, IDisposable
+    {
+        private readonly CancellationTokenSource _aborted = new();
+
+        public CancellationToken RequestAborted
+        {
+            get => _aborted.Token;
+            set { }
+        }
+
+        public void Abort() => _aborted.Cancel();
+
+        public void Dispose() => _aborted.Dispose();
+    }
+
+    private sealed class DroppableConnectionFilter : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            app =>
+            {
+                app.Use(async (context, continuation) =>
+                {
+                    using var connection = new DroppableConnection();
+                    context.Features.Set<IHttpRequestLifetimeFeature>(connection);
+
+                    await continuation(context);
+                });
+
+                next(app);
+            };
+    }
+
+    /// <summary>
+    /// Drops the connection at the moment an audit row is about to be written, then hands
+    /// off to the REAL writer.
+    ///
+    /// Delegating rather than reimplementing is the point: what is under test is
+    /// AuditWriter's own behaviour once the request has gone, so the test must not be
+    /// holding the pen.
+    /// </summary>
+    private sealed class DropsTheConnectionThenWrites(
+        PracticeDbContext db, IHttpContextAccessor http) : IAuditWriter
+    {
+        private readonly AuditWriter _real = new(db);
+
+        public Task WriteAsync(AuditEvent auditEvent)
+        {
+            http.HttpContext!.Abort();
+            return _real.WriteAsync(auditEvent);
+        }
+    }
+
+    private static void DropTheConnectionOnEveryAuditWrite(IServiceCollection services)
+    {
+        services.AddHttpContextAccessor();
+        services.AddSingleton<IStartupFilter, DroppableConnectionFilter>();
+        services.AddScoped<IAuditWriter, DropsTheConnectionThenWrites>();
+    }
+
+    private PracticeApiFactory DisconnectingFactory() =>
+        new(sql.ConnectionString, DropTheConnectionOnEveryAuditWrite);
+
+    private static HttpClient ClientFor(PracticeApiFactory factory, Guid providerPublicId)
+    {
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(
+            RequestProviderContext.HeaderName, providerPublicId.ToString());
+        return client;
+    }
+
+    /// <summary>
+    /// F1: all four refusals, each recorded after the caller has gone.
+    ///
+    /// Every reason in the fixed vocabulary is exercised, because each is a separate call
+    /// site and the defect this closes is exactly that a fix landed on one path and not on
+    /// its siblings. `not-found` comes first for the reason SECURITY.md gives: a 404
+    /// cannot distinguish "not yours" from "never existed" (D052), so the audit row is the
+    /// only place that attempt is recorded at all.
+    ///
+    /// Control: IAuditWriter.WriteAsync — the absence of a CancellationToken parameter,
+    /// with AuditWriter saving on CancellationToken.None.
+    /// Deleted (the parameter restored and the endpoint's ct threaded back through
+    /// AuditRefusedDiscardAsync into SaveChangesAsync, the shape before this commit) → red
+    /// on the first assertion, "Assert.Single() Failure: The collection was empty".
+    /// </summary>
+    [Fact]
+    public async Task A_refused_discard_is_audited_even_when_the_caller_disconnects()
+    {
+        var providerPublicId = await SeedProviderAsync();
+        using var client = ClientFor(providerPublicId);
+
+        var draft = await SeedDraftAsync(client);
+
+        using var factory = DisconnectingFactory();
+        using var dropping = ClientFor(factory, providerPublicId);
+
+        // not-found: an id that exists nowhere. Indistinguishable, by design, from one
+        // belonging to another clinician.
+        var absentId = Guid.NewGuid();
+        (await dropping.DeleteAsync($"/notes/{absentId}")).Dispose();
+
+        Assert.Contains("not-found",
+            Assert.Single(await DiscardEventsAsync(absentId)).Metadata!,
+            StringComparison.Ordinal);
+
+        // has-content: a draft somebody has written in.
+        (await dropping.DeleteAsync($"/notes/{draft.PublicId}")).Dispose();
+
+        Assert.Contains("has-content",
+            Assert.Single(await DiscardEventsAsync(draft.PublicId)).Metadata!,
+            StringComparison.Ordinal);
+
+        // signed: the same note, attested to.
+        using (var signed = await client.PostAsync($"/notes/{draft.PublicId}/sign", null))
+        {
+            signed.EnsureSuccessStatusCode();
+        }
+
+        (await dropping.DeleteAsync($"/notes/{draft.PublicId}")).Dispose();
+
+        Assert.Contains(await DiscardEventsAsync(draft.PublicId),
+            e => e.Metadata!.Contains("reason=signed", StringComparison.Ordinal));
+
+        // amendment: its next version, cleared — the sequence D069 closed.
+        using var amended = await client.PostAsJsonAsync($"/notes/{draft.PublicId}/amend",
+            new AmendNoteRequest("Corrected the accuracy figure."));
+        var v2 = (await amended.Content.ReadFromJsonAsync<NoteDto>())!;
+
+        using (var cleared = await client.PutAsJsonAsync($"/notes/{v2.PublicId}",
+            new UpdateNoteRequest("", "", "", "")))
+        {
+            cleared.EnsureSuccessStatusCode();
+        }
+
+        (await dropping.DeleteAsync($"/notes/{v2.PublicId}")).Dispose();
+
+        Assert.Contains("reason=amendment",
+            Assert.Single(await DiscardEventsAsync(v2.PublicId)).Metadata!,
+            StringComparison.Ordinal);
+
+        // Every one of them a refusal, and none of them a deletion.
+        Assert.All(await DiscardEventsAsync(draft.PublicId),
+            e => Assert.Equal(AuditOutcome.Failure, e.Outcome));
+    }
+
+    /// <summary>
+    /// The same property on a different endpoint, which is what makes this a class rather
+    /// than a case.
+    ///
+    /// Opening a note discloses full S/O/A/P for every version and writes PatientViewed
+    /// (D065). The disclosure has already happened by the time that row is written, so a
+    /// caller who disconnects has still read the record — and the row saying so was the
+    /// thing being abandoned.
+    ///
+    /// Control: IAuditWriter.WriteAsync — the absence of a CancellationToken parameter,
+    /// with AuditWriter saving on CancellationToken.None.
+    /// Deleted (the parameter restored and GetNoteHistory's ct threaded into
+    /// SaveChangesAsync) → red on Assert.Single, "Assert.Single() Failure: The collection
+    /// was empty".
+    /// </summary>
+    [Fact]
+    public async Task A_note_read_is_audited_even_when_the_caller_disconnects()
+    {
+        var providerPublicId = await SeedProviderAsync();
+        using var client = ClientFor(providerPublicId);
+
+        var draft = await SeedDraftAsync(client);
+
+        using var factory = DisconnectingFactory();
+        using var dropping = ClientFor(factory, providerPublicId);
+
+        (await dropping.GetAsync($"/notes/{draft.PublicId}/history")).Dispose();
+
+        var read = Assert.Single(await NoteReadEventsAsync(draft.PublicId));
+        Assert.Equal(AuditOutcome.Success, read.Outcome);
+        Assert.Contains("versions=1", read.Metadata!, StringComparison.Ordinal);
+    }
+
+    // ------------------- what a refusal is called, and what it tells her (F3)
+
+    /*
+     * A REFUSAL HAS TWO AUDIENCES AND THEY NEED DIFFERENT THINGS.
+     *
+     * The audit row is counted a year later by someone asking "did anyone try to delete a
+     * signed clinical record". The sentence is read now, by a clinician who has to be told
+     * what to do next. They were being decided by one branch, and both were wrong for the
+     * same two notes:
+     *
+     *   a SIGNED amendment  audited as `refused;reason=amendment`, so the count of
+     *                       attempts on signed records was short by exactly the set of
+     *                       amended — i.e. contested — records, and the sentence asked her
+     *                       to correct and sign a note that was already signed;
+     *
+     *   a SUPERSEDED v1     told "amend it instead", which Amend() then refuses, because a
+     *                       version that has been replaced is not the one to amend.
+     */
+
+    /// <summary>
+    /// A signed amendment is a signed clinical record. That is what the row must say.
+    ///
+    /// Reached by asking about Status before asking about lineage. The amendment branch
+    /// still has to come before the emptiness one — a cleared amendment is a Draft with
+    /// four empty sections — so the order is status, then lineage, then content.
+    ///
+    /// Control: NoteEndpoints.DiscardDraft — the `note.Status != NoteStatus.Draft` branch
+    /// standing ahead of the `note.SupersedesNoteId is not null` branch.
+    /// Deleted → red on Assert.Contains("reason=signed", …), the metadata reading
+    /// "refused;reason=amendment".
+    /// </summary>
+    [Fact]
+    public async Task A_signed_amendment_is_refused_as_signed_rather_than_as_an_amendment()
+    {
+        using var client = ClientFor(await SeedProviderAsync());
+        var v1 = await SeedDraftAsync(client);
+
+        using (var signed = await client.PostAsync($"/notes/{v1.PublicId}/sign", null))
+        {
+            signed.EnsureSuccessStatusCode();
+        }
+
+        using var amended = await client.PostAsJsonAsync($"/notes/{v1.PublicId}/amend",
+            new AmendNoteRequest("Corrected the accuracy figure."));
+        var v2 = (await amended.Content.ReadFromJsonAsync<NoteDto>())!;
+
+        // The amendment is signed in its turn. From here it is a clinical record like any
+        // other, and its lineage is history rather than status.
+        using (var signedAgain = await client.PostAsync($"/notes/{v2.PublicId}/sign", null))
+        {
+            signedAgain.EnsureSuccessStatusCode();
+        }
+
+        using var discard = await client.DeleteAsync($"/notes/{v2.PublicId}");
+        Assert.Equal(HttpStatusCode.Conflict, discard.StatusCode);
+
+        var refusal = Assert.Single(await DiscardEventsAsync(v2.PublicId));
+        Assert.Equal(AuditOutcome.Failure, refusal.Outcome);
+        Assert.Contains("reason=signed", refusal.Metadata!, StringComparison.Ordinal);
+
+        // v2 is current, so amending it IS the way forward and the copy may say so.
+        var message = await discard.Content.ReadAsStringAsync();
+        Assert.Contains("amend it instead", message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A superseded version is never told to amend itself.
+    ///
+    /// The check is not on the wording but on the ADVICE: the test performs the action the
+    /// old sentence named and asserts the API refuses it. A refusal that sends a clinician
+    /// to a second refusal is worse than a bare "no" — she now believes the record is
+    /// broken rather than that she is on the wrong version of it.
+    ///
+    /// Control: NoteEndpoints.DiscardDraft — the `note.IsCurrent` branch choosing between
+    /// the two signed sentences.
+    /// Deleted → red on Assert.DoesNotContain("amend it instead", …), which reads
+    /// "String.DoesNotContain() Failure: Sub-string found".
+    /// </summary>
+    [Fact]
+    public async Task A_superseded_version_is_not_told_to_amend_itself()
+    {
+        using var client = ClientFor(await SeedProviderAsync());
+        var v1 = await SeedDraftAsync(client);
+
+        using (var signed = await client.PostAsync($"/notes/{v1.PublicId}/sign", null))
+        {
+            signed.EnsureSuccessStatusCode();
+        }
+
+        using var amended = await client.PostAsJsonAsync($"/notes/{v1.PublicId}/amend",
+            new AmendNoteRequest("Corrected the accuracy figure."));
+        amended.EnsureSuccessStatusCode();
+
+        using var discard = await client.DeleteAsync($"/notes/{v1.PublicId}");
+        Assert.Equal(HttpStatusCode.Conflict, discard.StatusCode);
+
+        var message = await discard.Content.ReadAsStringAsync();
+
+        // The action the old sentence recommended, taken at its word.
+        using var followingTheAdvice = await client.PostAsJsonAsync($"/notes/{v1.PublicId}/amend",
+            new AmendNoteRequest("Following the message on the screen."));
+        Assert.Equal(HttpStatusCode.Conflict, followingTheAdvice.StatusCode);
+
+        Assert.DoesNotContain("amend it instead", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("replaced", message, StringComparison.OrdinalIgnoreCase);
+
+        // Still audited as an attempt on a signed record, which is what it is.
+        Assert.Contains("reason=signed",
+            Assert.Single(await DiscardEventsAsync(v1.PublicId)).Metadata!,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The same sentence, in the other place a clinician can meet it.
+    ///
+    /// PUT /notes/{superseded} answers 409 with the domain's own wording, and the domain
+    /// said "Create an amendment instead" whether or not this version could be amended.
+    /// One finding, two call sites — the editing refusal is the sibling of the discard
+    /// refusal and had the identical defect.
+    ///
+    /// Control: NoteEndpoints.UpdateDraft, via ClinicalNote.UpdateContent — the
+    /// NoteStatus.Amended branch of the refusal message.
+    /// Deleted → red on Assert.DoesNotContain("amendment instead", …), "Sub-string found".
+    /// </summary>
+    [Fact]
+    public async Task A_superseded_version_is_not_told_to_amend_itself_when_edited()
+    {
+        using var client = ClientFor(await SeedProviderAsync());
+        var v1 = await SeedDraftAsync(client);
+
+        using (var signed = await client.PostAsync($"/notes/{v1.PublicId}/sign", null))
+        {
+            signed.EnsureSuccessStatusCode();
+        }
+
+        using var amended = await client.PostAsJsonAsync($"/notes/{v1.PublicId}/amend",
+            new AmendNoteRequest("Corrected the accuracy figure."));
+        amended.EnsureSuccessStatusCode();
+
+        using var edit = await client.PutAsJsonAsync($"/notes/{v1.PublicId}",
+            new UpdateNoteRequest("Rewritten.", "", "", ""));
+
+        Assert.Equal(HttpStatusCode.Conflict, edit.StatusCode);
+
+        var message = await edit.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("amendment instead", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("replaced", message, StringComparison.OrdinalIgnoreCase);
+    }
     /// <summary>
     /// A signature time is an instant, and must reach the browser as one.
     ///

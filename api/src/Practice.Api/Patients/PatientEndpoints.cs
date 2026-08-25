@@ -128,7 +128,7 @@ public static class PatientEndpoints
             providerId: provider.ProviderId,
             entityType: nameof(Patient),
             entityPublicId: patient.PublicId,
-            ipAddress: http.Connection.RemoteIpAddress?.ToString()), ct);
+            ipAddress: http.Connection.RemoteIpAddress?.ToString()));
 
         return Results.Ok(PatientDetail.From(patient));
     }
@@ -169,7 +169,7 @@ public static class PatientEndpoints
         await audit.WriteAsync(AuditEvent.Record(
             AuditEventType.PatientCreated, AuditOutcome.Success,
             providerId: provider.ProviderId,
-            entityType: nameof(Patient), entityPublicId: patient.PublicId), ct);
+            entityType: nameof(Patient), entityPublicId: patient.PublicId));
 
         return Results.Created(
             $"/patients/{patient.PublicId}", PatientDetail.From(patient));
@@ -204,7 +204,7 @@ public static class PatientEndpoints
         await audit.WriteAsync(AuditEvent.Record(
             AuditEventType.PatientUpdated, AuditOutcome.Success,
             providerId: provider.ProviderId,
-            entityType: nameof(Patient), entityPublicId: patient.PublicId), ct);
+            entityType: nameof(Patient), entityPublicId: patient.PublicId));
 
         return Results.Ok(PatientDetail.From(patient));
     }
@@ -229,7 +229,7 @@ public static class PatientEndpoints
             AuditEventType.PatientUpdated, AuditOutcome.Success,
             providerId: provider.ProviderId,
             entityType: nameof(Patient), entityPublicId: patient.PublicId,
-            metadata: "action=discharged"), ct);
+            metadata: "action=discharged"));
 
         return Results.Ok(PatientDetail.From(patient));
     }
@@ -274,7 +274,7 @@ public static class PatientEndpoints
         await db.SaveChangesAsync(ct);
 
         await audit.WriteAsync(GuardianAudit(
-            provider.ProviderId, patient, guardian, "guardian-added"), ct);
+            provider.ProviderId, patient, guardian, "guardian-added"));
 
         return Results.Ok(PatientDetail.From(patient));
     }
@@ -335,7 +335,7 @@ public static class PatientEndpoints
         await db.SaveChangesAsync(ct);
 
         await audit.WriteAsync(GuardianAudit(
-            provider.ProviderId, patient, guardian, "guardian-updated"), ct);
+            provider.ProviderId, patient, guardian, "guardian-updated"));
 
         return Results.Ok(PatientDetail.From(patient));
     }
@@ -374,7 +374,7 @@ public static class PatientEndpoints
         await db.SaveChangesAsync(ct);
 
         await audit.WriteAsync(AddressAudit(
-            provider.ProviderId, patient, address, "address-added"), ct);
+            provider.ProviderId, patient, address, "address-added"));
 
         return Results.Ok(PatientDetail.From(patient));
     }
@@ -422,7 +422,7 @@ public static class PatientEndpoints
         await db.SaveChangesAsync(ct);
 
         await audit.WriteAsync(AddressAudit(
-            provider.ProviderId, patient, address, "address-corrected"), ct);
+            provider.ProviderId, patient, address, "address-corrected"));
 
         return Results.Ok(PatientDetail.From(patient));
     }

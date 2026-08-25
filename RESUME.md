@@ -60,13 +60,13 @@ going on its own, but it has to still exist.
 | Live | https://blueshell-dev-web.gentlesmoke-b0e719aa.eastus.azurecontainerapps.io |
 | Sign-in | `michelle@blueshellspeech.example` |
 | Password | Azure portal → `blueshell-dev-api` → Settings → Secrets → `seed-password` |
-| Tests | 141 .NET · 134 web unit · 65 E2E · CI green |
+| Tests | 225 .NET · 332 web unit · 112 E2E (2 skipped) · CI green |
 | Repo | `github.com/Divici/blue-shell-speech` |
 
 First sign-in forces MFA enrolment — scan the QR, save the recovery codes.
 
-**Last completed:** WORK_QUEUE 1.1, visit scheduling UI.
-**Next up:** WORK_QUEUE 1.2, the start-a-note entry point.
+**Last completed:** WORK_QUEUE 1.12, the five reviewer findings against `a4d6ff5`.
+**Next up:** WORK_QUEUE 1.5, the `ConsultationRequest` entity.
 
 ## Local prerequisites
 
@@ -79,7 +79,7 @@ First sign-in forces MFA enrolment — scan the QR, save the recovery codes.
 
 ## Decision log
 
-`DECISIONS.md` is **gitignored** — it exists locally with 60 entries and will not appear in
+`DECISIONS.md` is **gitignored** — it exists locally with 77 entries and will not appear in
 a fresh clone. Do not assume it is missing because it was never written. Keep appending to
 it; it carries the reasoning behind everything above, plus an interview-talking-points
 index at the bottom.
