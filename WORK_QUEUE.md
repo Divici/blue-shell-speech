@@ -74,6 +74,45 @@ return: every one is a form against an endpoint that already exists and is alrea
         has asserted a weaker claim than its comment states — see D042 finding #2 and D061.
         A tenancy test must fail when the filter it names is deleted.
 
+- [ ] **1.11 Fix the five reviewer findings against `098d41c`** — **F1 is severe: it
+      destroys navigational access to a signed clinical note.** Run this before any
+      remaining Phase 1 item. Full detail, including the confirmed-clean list, is in the
+      reviewer report; the essentials:
+      - **F1** Discard reaches an amendment draft and strands the signed version it
+        supersedes. Sign v1 → `POST /notes/{v1}/amend` → v2 (Draft, content copied) →
+        `PUT /notes/{v2}` with four empty strings (allowed: v2 is a Draft, and
+        `TR_ClinicalNotes_PreventSignedEdits` only guards `Status <> 1`) →
+        `DELETE /notes/{v2}` passes all four layers, because `CanBeDiscarded`, the
+        endpoint, the query filter, and `TR_ClinicalNotes_PreventDeletingRealNotes` all
+        check Status and emptiness and **never examine `SupersedesNoteId`**. v1 is left
+        `Amended, IsCurrent = 0`, so the visit has no current note: the day card offers
+        "Start note" again, `GET /notes/appointment/{visit}` 404s, and the signed record is
+        unreachable through the product's only navigation. `isEmptyNote()` even re-renders
+        "Discard this empty note" on the cleared amendment, leading the user there.
+        Fix in the aggregate, the endpoint, AND the trigger — a guard in one is not a guard
+        in all.
+      - **F2** `An_amendment_is_never_discardable` is green by construction — the D066
+        defect, **fourth occurrence**, inside the commit that established D066. It asserts
+        on `Signed().Amend(...)` while content is still the copied original. Adding
+        `amendment.UpdateContent("", "", "", "")` before the assertion turns it red against
+        the code as committed. Its docstring is also false: nothing obliges an amendment to
+        be signed.
+      - **F3** `NoteDiscarded` is written outside the delete's transaction, on the request's
+        cancellation token. `SaveChangesAsync(ct)` commits the delete, then `audit.WriteAsync`
+        is a second save; there is no `BeginTransaction` in the API. Background the PWA
+        mid-request and the row is gone with nothing in `AuditEvents`.
+      - **F4** Every refused delete is unaudited — 409 writes nothing, and the raw-SQL
+        `THROW 50002` propagates unhandled (no `UseExceptionHandler`/`AddProblemDetails` in
+        `api/src`). Walking note `PublicId`s with DELETE leaves zero evidence.
+      - **F5** `DayVisit.StartUtc` is `DateTimeKind.Unspecified` from `datetime2`, so it
+        serialises **without a `Z`**. `new Date(visit.startUtc)` in
+        `web/lib/visit-documentation.ts` parses it as process-local time; under
+        `TZ=America/New_York` a 09:00 ET visit reads "This visit has not started yet" for
+        four hours after it ended, with no button and no override. Every fixture in
+        `visit-documentation.test.ts` and `VisitCard.test.tsx` hardcodes a `Z` the endpoint
+        never sends, so the suite cannot see it. Fix the serialisation at the source and
+        make at least one test consume a real endpoint payload.
+
 ## Phase 2 — Slice 6, dictation
 
 - [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
