@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Practice.Application.Providers;
+using Practice.Domain.Common;
 using Practice.Domain.Scheduling;
 using Practice.Infrastructure.Persistence;
 
@@ -69,7 +70,7 @@ public static class AppointmentEndpoints
     {
         if (provider.ProviderId is null) return Results.Unauthorized();
 
-        var practiceZone = PracticeTimeZone();
+        var practiceZone = PracticeTime.Zone;
         var localMidnight = date.ToDateTime(TimeOnly.MinValue);
         var startUtc = TimeZoneInfo.ConvertTimeToUtc(
             DateTime.SpecifyKind(localMidnight, DateTimeKind.Unspecified), practiceZone);
@@ -270,25 +271,6 @@ public static class AppointmentEndpoints
         });
     }
 
-    /// <summary>
-    /// America/New_York, resolved cross-platform.
-    ///
-    /// Windows and Linux disagree on time-zone ids ("Eastern Standard Time" vs
-    /// "America/New_York"). .NET 8+ accepts IANA ids on Windows too, but the fallback is
-    /// kept so a container on either platform resolves the same zone rather than throwing
-    /// at runtime on one of them.
-    /// </summary>
-    private static TimeZoneInfo PracticeTimeZone()
-    {
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
-        }
-        catch (TimeZoneNotFoundException)
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-        }
-    }
 }
 
 public sealed record AppointmentSummary(

@@ -266,16 +266,58 @@ Michelle fills by typing or speaking.
 signing a note should be able to see the evidence for every figure in it — that is the whole of
 §7.6 human-in-the-loop, made concrete.
 
-### Encounter
+### Encounter & EncounterDiagnosis
 
 Ships now, per the scope ledger, even though superbill PDF generation is sequenced later.
+**Empty of features: no endpoint, no screen.** Adding a billing table to a live clinical
+database later means backfilling every historical appointment from notes. Shipping the tables
+now costs one migration.
 
-`Id`/`PublicId`, `ProviderId`, `PatientId`, `AppointmentId`, `ServiceDate`,
-`CptCode`, `IcdCodes` (`nvarchar(200)`), `Units`, `ChargeAmount` (`decimal(10,2)`),
-`PaymentStatus`, `PaidAtUtc`, `SuperbillGeneratedAtUtc`.
+| Column | Type | Notes |
+|---|---|---|
+| `Id` / `PublicId` | `bigint` / `guid` | |
+| `ProviderId` | `bigint` | Tenancy. Global query filter, like every other table |
+| `PatientId` / `AppointmentId` | `bigint` | FK, `Restrict` |
+| `RenderingProviderId` | `bigint` | FK → `Provider`. **Not the same fact as `ProviderId`** |
+| `ClinicalNoteId` | `bigint` | Nullable FK. The note version this was **coded from**, set once |
+| `ServiceDate` | `date` | Practice-local calendar date, derived from the visit's `StartUtc` |
+| `CptCode` | `varchar(5)` | The code only. **No descriptor column** — CPT descriptors are AMA-licensed |
+| `Modifiers` | `varchar(11)` | Up to four two-character codes, comma separated. Nullable |
+| `PlaceOfService` | enum | **The enum's values ARE the CMS codes** — `Home = 12`, `School = 3`, `Office = 11`, telehealth `2`/`10`, `Other = 99` |
+| `Units` | `smallint` | 1–16 (`CHECK`). 16 = the 4-hour appointment cap in 15-minute units |
+| `ChargeAmount` / `AmountPaid` | `decimal(10,2)` | Never float |
+| `PaymentStatus` | enum | `Unpaid` / `PartiallyPaid` / `Paid` / **`Waived`** |
+| `PaymentMethod` | enum | Nullable. `Cash` / `Check` / `Card` / `BankTransfer` / `Other` |
+| `PaidAtUtc` | `datetime2(3)` | Nullable |
+| `SuperbillGeneratedAtUtc` | `datetime2(3)` | Nullable. Most recent generation, not the first |
 
-Adding a billing table to a live clinical database later means backfilling every historical
-appointment. Shipping the empty table now costs one migration.
+**`EncounterDiagnosis`** — `Id`/`PublicId`, `ProviderId`, `EncounterId`, `Sequence`, `Code`
+(`varchar(8)`). A child table rather than a delimited `IcdCodes` column, because **order is a
+clinical claim**: the first code is the primary reason for the encounter, and a string stores
+an order it cannot enforce. Unique on `(EncounterId, Sequence)` and on `(EncounterId, Code)` —
+two indexes, two tests, because either would answer for the other on a duplicate planted at the
+same position. Modifiers stay a delimited column, deliberately: a modifier is a payer-driven
+qualifier on the line, a diagnosis is a claim about the child. See D084.
+
+**`ServiceDate` is a `date`, and the one honest exception to "store UTC."** A date of service
+is the calendar day a payer compares against, and an in-home practice runs evening sessions
+where the UTC date has already rolled over — 01:30Z is the previous evening in Maryland.
+`Encounter.Record` takes the visit's UTC instant and converts it through
+`PracticeTime.LocalDateOf`, so no caller can supply the wrong day. Same reasoning
+`DateOfBirth` already uses.
+
+**No card data, ever** (§17). No PAN, no last four, no processor reference — payment happens
+externally and this row records only that it happened. A test asserts on the *shape of the
+type* so a column whose name looks like card data fails immediately.
+
+**No `UNIQUE` on `AppointmentId`.** One visit can produce two billable lines. `ClinicalNotes`
+has a filtered unique index on the same column for the opposite reason.
+
+**Nothing freezes after `SuperbillGeneratedAtUtc` is set, and that is a decision.** A document
+a family has already submitted should not be silently editable — but a freeze with no
+correction path is the D069 trap: one wrong code, generated once, and the row can never be
+right again. The freeze trigger and the void-and-replace path ship together with generation
+itself, as a trigger plus two nullable columns and no backfill. See D084.
 
 ### AuditEvent
 
@@ -296,14 +338,45 @@ systems only log writes and discover the gap during an investigation.
 ### ResourceDocument
 
 Ships empty. The Resources tab is hidden until a row exists — hiding is a content condition,
-not a code change (§4.1).
+not a code change (§4.1). That sentence is a constraint on the columns: everything the public
+page will need has to exist now, or the first handout is a migration.
 
-`Id`/`PublicId`, `Title`, `Description`, `BlobUri`, `FileSizeBytes`, `ContentType`,
-`IsPublished`, `PublishedAtUtc`, `SortOrder`.
+`Id`/`PublicId`, `ProviderId`, `Title`, `Slug`, `Description`, `BlobUri`, `ContentType`,
+`FileSizeBytes`, `RevisionNumber`, `ContentUpdatedAtUtc`, `IsPublished`, `PublishedAtUtc`,
+`WithdrawnAtUtc`, `SortOrder`.
 
-**Public, non-PHI, no `ProviderId` filter needed** — parent handouts, served from a different
-container than clinical audio, with different access rules. Do not let it drift into a general
-file store; patient document upload is a separate entity when it arrives.
+**It belongs to a PROVIDER — not to a patient, and not to nobody.** This entry previously said
+"public, non-PHI, no `ProviderId` filter needed." That is true of the *published rows* and
+wrong about the *table*: the library is edited through a session, and an unfiltered one shows a
+second clinician's unpublished drafts to the first. So it carries a `ProviderId` like every
+other domain row and is filtered the same way. **The public read path opts out explicitly** —
+`IgnoreQueryFilters().Where(r => r.IsPublished)`, one greppable line — rather than teaching the
+filter a null-provider special case, which the next thing added to this table would inherit.
+Forgetting the opt-out renders an empty page: visible, and it leaks nothing. See D085.
+
+**`Slug` is unique across the whole table**, not per provider, because `/resources/{slug}` has
+no tenant segment in it. A per-provider index would let two clinicians own the same URL and let
+the route resolve by insertion order.
+
+**`ContentType` is an allowlist** — `application/pdf`, `image/png`, `image/jpeg` — enforced in
+the aggregate on both upload and replacement. This is the one table meant to be served to
+anonymous readers, so the content type decides what a browser does with the bytes; SVG is
+absent on purpose, being a document format that runs script.
+
+**Versioning is a revision counter, not a row chain.** Correcting a handout replaces the file
+behind the same URL and bumps `RevisionNumber`; nobody signs a handout and nothing attests to
+it, so the superseding-row chain `ClinicalNote` needs would buy nothing.
+
+**No retention clock, and no delete.** Not PHI, so nothing obliges deletion — and a handout
+families were sent to is part of the record of what the practice told them. `Withdraw` takes it
+down and stamps `WithdrawnAtUtc`; `PublishedAtUtc` records when it FIRST went up and is never
+cleared, because "how long has this been in front of families" is the question that matters if
+a handout ever has to be corrected for a safety reason.
+
+Do not let it drift into a general file store; patient document upload is a separate entity
+when it arrives. One table holding both would put a public blob container and a clinical one
+behind the same rows, one forgotten predicate away from serving an evaluation report from a
+marketing page.
 
 ### ConsultationRequest
 
@@ -350,8 +423,20 @@ Per the scope ledger, these have their seams cut now:
 |---|---|
 | Document / file upload | `PatientDocument` mirrors `ResourceDocument`; blob container split already exists |
 | Evaluation reports | `AppointmentType.Evaluation` ships; a report is a `ClinicalNote` subtype or sibling |
-| Superbill PDF | `Encounter` ships complete |
+| Superbill PDF | `Encounter` + `EncounterDiagnosis` ship complete |
 | Live Azure Cost API | Threshold logic runs against internal counters; the source is swappable |
+
+**What a superbill feature still has to add**, so the claim above is checkable rather than
+comforting: endpoints and authorization for coding a visit, `IAuditWriter` calls on every
+billing read and write, the PDF renderer, `Provider.Npi` becoming required at generation time,
+practice name and address from environment config (never the tree — CLAUDE.md #7), and the
+freeze trigger with its void-and-replace path. All of that is code and one no-backfill
+migration. **What it does not have to add is a table, a `ProviderId`, or a date of service** —
+which are the three things that would have needed backfilling from a year of notes.
+
+**What a resource feature still has to add**: the upload endpoint and blob container, the
+`/resources` and `/resources/[slug]` routes, the nav condition on a published count, and the
+`IgnoreQueryFilters().Where(r => r.IsPublished)` read described above. Content, not schema.
 
 ---
 

@@ -3,10 +3,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Practice.Application.Providers;
 using Practice.Domain.Auditing;
+using Practice.Domain.Billing;
 using Practice.Domain.ClinicalNotes;
 using Practice.Domain.Consultations;
 using Practice.Domain.Goals;
 using Practice.Domain.Patients;
+using Practice.Domain.Resources;
 using Practice.Domain.Scheduling;
 using Practice.Domain.Providers;
 using Practice.Infrastructure.Identity;
@@ -41,6 +43,12 @@ public sealed class PracticeDbContext(
     public DbSet<ClinicalNote> ClinicalNotes => Set<ClinicalNote>();
 
     public DbSet<ConsultationRequest> ConsultationRequests => Set<ConsultationRequest>();
+
+    public DbSet<Encounter> Encounters => Set<Encounter>();
+
+    public DbSet<EncounterDiagnosis> EncounterDiagnoses => Set<EncounterDiagnosis>();
+
+    public DbSet<ResourceDocument> ResourceDocuments => Set<ResourceDocument>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -86,6 +94,41 @@ public sealed class PracticeDbContext(
          */
         builder.Entity<ConsultationRequest>().HasQueryFilter(
             c => providerContext.ProviderId != null && c.ProviderId == providerContext.ProviderId);
+
+        /*
+         * Billing is patient data, and it is filtered like patient data.
+         *
+         * EncounterDiagnosis gets its OWN filter rather than relying on its parent's. A
+         * child row protected only by the filter on the row above it is the defect D066 F4
+         * found on ClinicalNote and D073 found twice more on Guardian and PatientAddress:
+         * the parent covers for the child, so the child's filter can be deleted and no test
+         * goes red. The test for this one plants a foreign diagnosis on an encounter the
+         * caller genuinely owns, which is the only shape where this filter is the sole
+         * thing in the way.
+         */
+        builder.Entity<Encounter>().HasQueryFilter(
+            e => providerContext.ProviderId != null && e.ProviderId == providerContext.ProviderId);
+        builder.Entity<EncounterDiagnosis>().HasQueryFilter(
+            d => providerContext.ProviderId != null && d.ProviderId == providerContext.ProviderId);
+
+        /*
+         * Filtered too, even though the handouts are meant to be public.
+         *
+         * This is the same asymmetry ConsultationRequest has, pointing the other way. The
+         * WRITE side is authenticated and belongs to a provider, so the management surface
+         * must be scoped like every other table — otherwise a second clinician's unpublished
+         * drafts appear in the first one's library. The READ side is anonymous, and the
+         * public page has no session to arm the filter with.
+         *
+         * Resolved by keeping the filter ordinary and making the public read a deliberate,
+         * greppable IgnoreQueryFilters().Where(r => r.IsPublished) when that page is built,
+         * rather than teaching this filter a null-provider special case. A conditional
+         * filter would be inherited by whatever gets added to this table next, and the safe
+         * direction to fail (D051: null matches NOTHING) would stop being true everywhere.
+         * Forgetting the opt-out renders an empty page, which is visible and leaks nothing.
+         */
+        builder.Entity<ResourceDocument>().HasQueryFilter(
+            r => providerContext.ProviderId != null && r.ProviderId == providerContext.ProviderId);
 
         /*
          * Every DateTime is UTC, enforced at the mapping layer.
