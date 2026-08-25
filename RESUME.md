@@ -8,35 +8,48 @@ the repo.
 Start a **new** session in this directory (`claude`, not `--continue`) and paste:
 
 ```
-Read CLAUDE.md, WORK_QUEUE.md, and memory-bank/active-context.md.
+Read CLAUDE.md, ORCHESTRATION.md, and WORK_QUEUE.md.
 
-Then set up an autonomous loop: create a recurring cron job (every 5 minutes,
-"2-59/5 * * * *") whose prompt is:
+You are the ORCHESTRATOR. You do not build. You dispatch sub-agents, one task at a
+time, and verify their work. Follow ORCHESTRATION.md exactly — it has the loop and
+the briefs.
 
-  AUTONOMOUS RUN — do not reply with a plan, do the work. Read WORK_QUEUE.md.
-  Take the topmost unchecked task. Complete it fully: code, tests, lint, typecheck,
-  commit, push. Tick the box, append to the Log, and immediately start the next task
-  in the same turn. If a task needs David, move it to Blocked with the reason and take
-  the next one. Never stop to ask. Never end a turn saying you will continue.
-  Docker must be running for dotnet test. Synthetic data only. No AI attribution in
-  commit messages.
+Then arm a recurring cron job (every 5 minutes, "2-59/5 * * * *") whose prompt is:
 
-Then start on the topmost unchecked task immediately.
+  AUTONOMOUS RUN — you are the orchestrator. Read ORCHESTRATION.md and WORK_QUEUE.md.
+  Dispatch a sub-agent for the topmost unchecked task. Verify, tick, commit, and
+  immediately dispatch the next. Do not build anything yourself. Do not stop to ask.
+  Never end a turn saying you will continue.
+
+Then dispatch the first sub-agent immediately.
 ```
 
-Cron fires only while the session is idle, which is exactly when work would otherwise
-stall. Jobs are session-only — they die when the session ends, and the queue file is what
-survives.
+Cron fires only while the session is idle, which is exactly when the loop would otherwise
+have stalled. Jobs are session-only — they die when the session ends, and the queue file is
+what survives.
+
+## Why an orchestrator rather than one session doing the work
+
+A session that builds everything itself accumulates every file, test run, and diff it
+touches, and stops after a few hours. Restarting it needs a human. An orchestrator that
+only dispatches and verifies grows by about one short report per task, so it covers most
+of the queue in a single sitting. `ORCHESTRATION.md` has the full rationale.
 
 ## Context budget
 
-Each session will exhaust its context after a few hours of building. When it does:
+The orchestrator will still fill eventually, around 30–40 tasks. When it does:
 
 1. Make sure the current task is committed and its box ticked.
 2. End the session.
 3. Start a fresh one with the prompt above.
 
 `WORK_QUEUE.md` is the only state that matters. Everything else is in git.
+
+## The limit worth knowing
+
+Neither approach survives the terminal closing. Cron fires inside a live session; a session
+that has exited runs nothing. Leave the window open overnight — the orchestrator keeps
+going on its own, but it has to still exist.
 
 ## State as of the last handoff
 
