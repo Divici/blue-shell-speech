@@ -201,6 +201,44 @@ return: every one is a form against an endpoint that already exists and is alrea
         save is what breaks," but it throws before `SaveChangesAsync`. The D070 defect class
         inside the harness written to enforce D070.
 
+- [ ] **1.15 Fix the reviewer findings against `0145d6c`** — **F1 is a regression that
+      degrades Michelle's first request of every day.** Run before 1.13, 1.7 and 1.8.
+      - **Before writing any `DECISIONS.md` entry claiming a class is closed, enumerate
+        every window in which the same outcome is reachable and test each.** Three rounds
+        running, a fix has closed the reported window, left an adjacent one, and recorded
+        the class as closed. F2 below is that exact failure.
+      - **F1 (regression)** `DatabaseTimeouts.cs` sets a 30s request timeout and justifies
+        it as "the BFF gives up at twenty-five (`web/lib/api`)". `AbortSignal.timeout`
+        appears **once** in the whole web tree — `web/lib/api/consultations.ts`, the public
+        form. `notes.ts`, `patients.ts`, `schedule.ts` (×2) and `web/lib/auth/api-client.ts`
+        set no signal, so the clinician is still attached. Michelle's first request of the
+        day hits an auto-paused Azure SQL, `EnableRetryOnFailure(5, 10s)` starts carrying it
+        — the stated reason that policy exists — and `RequestTimeoutsMiddleware` kills it at
+        30s with a 504, where before this commit it had ~3 minutes and would have
+        succeeded. Either set the BFF timeouts the comment claims, or raise the request
+        timeout above the retry budget. Do not leave the two contradicting each other.
+      - **F2** "500 and zero audit rows" is still reachable one round trip later than the
+        new test covers: the autosave can land between `SingleOrDefaultAsync` and
+        `SaveChangesAsync`, the `RowVersion` predicate misses,
+        `DbUpdateConcurrencyException` throws, and nothing catches `DbUpdate*`.
+        `InterleavesOneWriteBeforeTheSecondRead` fires only *before* the second read, so the
+        existing test **cannot reach this window by construction**. D081 claims this class
+        is closed; it is not.
+      - **F3** The late refusal's audit row is the only refusal row a rollback can erase —
+        every other refusal is written outside any transaction on `CancellationToken.None`.
+        If the commit fails through the retry budget, the row rolls back and the outcome is
+        again 500 with nothing on file. That inverts D075's principle for the row the commit
+        itself calls "the interesting row".
+      - **F4** The rewritten `Control:` line on `A_refused_discard_is_audited_as_a_failure`
+        says "one now"; there are **two** `AuditRefusedDiscardAsync` calls after the commit,
+        and deleting the late one leaves that test green.
+      - **F5 (from 1.6, carry forward)** The control for a database constraint is the
+        **migration**, not the EF configuration — the test database is built by running
+        migrations, so deleting `.IsUnique()` from a configuration leaves the index in place
+        and the test green. **Re-verify every constraint-related `Control:` line already in
+        the repo against the migration**, not the configuration. Add this to
+        `docs/TEST_STRATEGY.md`.
+
 ## Phase 2 — Slice 6, dictation
 
 - [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
