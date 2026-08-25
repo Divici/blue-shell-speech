@@ -91,6 +91,16 @@ builder.Services.AddInfrastructure(sqlConnectionString);
  * is DatabaseTimeouts.Ceiling, which is the number the BFF has to sit above — and
  * RequestBoundsTests measures it on a real DELETE rather than deriving it.
  *
+ * "THE UNCANCELLABLE HALF" IS MORE THAN AUDIT WRITES, AND FINDING THE REST TOOK A ROUND.
+ * Identity's store calls take no CancellationToken on any of their eighty-two methods, so
+ * the whole login path sat outside both bounds until PracticeUserManager put it on the
+ * deadline; and IConsultationNotifier holds no token by design, so its call site bounds it
+ * explicitly. What the deadline STILL does not cover — a transaction's BEGIN and COMMIT,
+ * which are SqlClient round trips rather than commands — is named on
+ * DatabaseTimeouts.Ceiling rather than papered over, because a token cannot fix those and
+ * pretending otherwise is how this file came to claim a Serilog correlation that did not
+ * exist (see the problem-details block above).
+ *
  * The middleware goes in below, immediately after the exception handler. Options without
  * it would be the D072 defect exactly — configuration present, control absent, and
  * everything looking right to whoever greps for it.

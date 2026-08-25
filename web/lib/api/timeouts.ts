@@ -14,11 +14,20 @@
  *     three commands of thirty seconds, plus five backoffs of up to ten — because those
  *     retries are what carry Michelle's first request of the day through an auto-paused
  *     Azure SQL, and a bound below them deletes the recovery.
- *   * `DatabaseTimeouts.UncancellableGrace`, 90s, which bounds everything that
- *     deliberately does not observe one. Audit writes hold no request token by design, and
- *     ASP.NET Core's request timeout CANCELS the request and then waits for the pipeline —
- *     so an uncancellable write runs on past that bound and ADDS to it. The two compose;
- *     they do not nest.
+ *   * `DatabaseTimeouts.UncancellableGrace`, 90s, which bounds the work that deliberately
+ *     does not observe one — audit writes, Identity's store calls, and the consultation
+ *     notification, none of which can be handed the request's token without either losing
+ *     the row when a phone locks or letting a caller skip the lockout counter. ASP.NET
+ *     Core's request timeout CANCELS the request and then waits for the pipeline, so such
+ *     work runs on past that bound and ADDS to it. The two compose; they do not nest.
+ *
+ * WHAT THAT SUM DOES NOT COVER, because this comment claimed it covered "everything" and
+ * the API's own class docstring said otherwise in the same breath. A transaction's BEGIN
+ * and COMMIT are SqlClient round trips rather than commands, so no timeout applies and no
+ * token can interrupt one — `AtomicWrites` explains why giving the commit a deadline would
+ * make it worse rather than bounded. They are microseconds on a healthy connection and
+ * unbounded on a dead one. The margin below is not sized for them; nothing is, and a
+ * number nobody has measured would read as a decision and is not one (D072).
  *
  * The earlier version of this comment described only the first of those and called it the
  * ceiling. It was wrong by four minutes in the direction that matters: this constant was

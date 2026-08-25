@@ -46,10 +46,17 @@ public static class InfrastructureServices
                  * away — so the bound on a command was whatever the driver happened to
                  * use, and a `Command Timeout` keyword in a connection string this
                  * application does not own could have replaced it with anything, zero
-                 * included. That matters most where nothing else can intervene: an audit
-                 * write does not observe the request token by design (D075), so this and
-                 * the retry policy above are the ONLY things bounding it — their product
-                 * is DatabaseTimeouts.RetryBudget, where the arithmetic lives.
+                 * included.
+                 *
+                 * THIS COMMENT USED TO SAY THIS AND THE RETRY POLICY WERE "THE ONLY THINGS
+                 * BOUNDING" AN AUDIT WRITE, AND THAT STOPPED BEING TRUE IN THE COMMIT THAT
+                 * INTRODUCED UncancellableWriteDeadline. It is D072's class — a claim about
+                 * a control, in prose, with nothing able to notice it going stale — and it
+                 * had the same sentence's sibling in docs/SECURITY.md §Audit for company.
+                 * What actually bounds an uncancellable write now is the deadline
+                 * registered below; this command timeout bounds one STATEMENT, and
+                 * DatabaseTimeouts.RetryBudget is what the retry policy above can spend on
+                 * one retried operation. Three bounds, three jobs.
                  */
                 sql.CommandTimeout(DatabaseTimeouts.CommandSeconds);
             }));
@@ -101,7 +108,18 @@ public static class InfrastructureServices
              * library deliberately does not reference.
              */
             .AddTokenProvider<AuthenticatorTokenProvider<PracticeUser>>(
-                TokenOptions.DefaultAuthenticatorProvider);
+                TokenOptions.DefaultAuthenticatorProvider)
+            /*
+             * THE ONE REASON A DERIVED UserManager EXISTS: none of its methods takes a
+             * CancellationToken, so every Identity store call on the login path observed
+             * neither the request timeout nor the uncancellable-write deadline.
+             *
+             * PracticeUserManager overrides the single protected property they all pass
+             * through. Registered here rather than as a bare AddScoped because
+             * AddIdentityCore has already registered UserManager<PracticeUser>, and this is
+             * the call that makes that resolution land on ours — see IdentityBuilder.
+             */
+            .AddUserManager<PracticeUserManager>();
 
         /*
          * SCOPED, so one deadline covers every uncancellable write in a request.

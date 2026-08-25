@@ -45,6 +45,25 @@ namespace Practice.Infrastructure.Persistence;
 /// state. It is bounded in the other direction too: every path that writes an audit row
 /// has already read from this database on the same request, so the write is never the
 /// query carrying a resume from auto-pause — the resume is over by then.
+///
+/// AND THE SHARING HAS A SHARPER EDGE THAN "AN ABANDONED ROW", which is worth writing down
+/// because it was found the expensive way. A grace shared first-come-first-served means a
+/// write that STARTS after it is spent gets nothing at all — a cancelled token stays
+/// cancelled, so <c>SaveChangesAsync</c> throws before issuing anything rather than being
+/// merely short of time. So whichever uncancellable write runs FIRST on a path is the one
+/// that survives, and the order they are written in is a control rather than a style
+/// choice. That is invisible while audit writes are the only consumer and stops being
+/// invisible the moment there is a second: <c>PracticeUserManager</c> puts Identity's store
+/// calls here (they have no token of their own to observe), so a failed login has two
+/// competing uncancellable writes, and <c>ProviderAuthenticator</c> audits before it
+/// increments — see point 3 on that class.
+///
+/// WHAT IS DELIBERATELY NOT HERE. A transaction's BEGIN and COMMIT (<c>AtomicWrites</c>).
+/// Not an oversight, and not fixable by handing them this token: SqlClient implements both
+/// synchronously, so a token could only refuse to START one — and refusing to start a
+/// COMMIT whose writes are already staged would roll back a decision that has already been
+/// taken, which is the single failure <c>AtomicWrites</c> exists to prevent.
+/// <c>DatabaseTimeouts.Ceiling</c> states that limit rather than claiming to cover it.
 /// </summary>
 public sealed class UncancellableWriteDeadline : IDisposable
 {

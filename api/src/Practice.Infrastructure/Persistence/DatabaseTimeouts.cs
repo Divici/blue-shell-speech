@@ -51,6 +51,12 @@ namespace Practice.Infrastructure.Persistence;
 /// the whole of it. Container Apps ingress imposes a bound of its own that this repository
 /// has not measured. Neither is described as a number here, because a number nobody has
 /// checked reads as a decision and is not one (D072).
+///
+/// THAT PARAGRAPH AND <see cref="Ceiling"/>'S USED TO CONTRADICT EACH OTHER — this one said
+/// two round trips were unbounded, and that one said the sum of two numbers was "the whole
+/// of what this tier will spend before answering". Both were in the same file, twenty lines
+/// apart, and the second is the one a reader takes away. <see cref="Ceiling"/> now says what
+/// it covers and what it does not, and the reason a token cannot fix the remainder.
 /// </summary>
 public static class DatabaseTimeouts
 {
@@ -193,6 +199,17 @@ public static class DatabaseTimeouts
     /// short costs an abandoned audit row rather than a broken <see cref="Ceiling"/>. This
     /// project has been bitten four times by an enumeration that was complete when it was
     /// written; the failure mode here is deliberately the survivable one.
+    ///
+    /// IT IS SHARED WITH MORE THAN AUDIT WRITES NOW, and that has a consequence worth
+    /// stating where the number is. Identity's store calls draw on the same deadline
+    /// (<c>PracticeUserManager</c>), because none of <c>UserManager</c>'s methods takes a
+    /// token and an unbounded login sits outside every bound this class states. So on the
+    /// authentication path two uncancellable writes compete for one grace, and WHICHEVER
+    /// RUNS FIRST IS THE ONE THAT SURVIVES a database refusing work. That is not a defect
+    /// of the shared design — it is the price of a stated ceiling — but it makes ordering a
+    /// control: <c>ProviderAuthenticator</c> writes its LoginFailed row before incrementing
+    /// the failure count, deliberately, because a lost row leaves no evidence while a lost
+    /// increment leaves countable rows.
     /// </summary>
     public static readonly TimeSpan UncancellableGrace = Command * 3;
 
@@ -201,16 +218,38 @@ public static class DatabaseTimeouts
     /// 50 seconds.
     ///
     /// <see cref="Request"/> bounds everything that observes a cancellation token.
-    /// <see cref="UncancellableGrace"/> bounds everything that deliberately does not, from
-    /// the moment the first bound fires. There is nothing else: the sum is the whole of
-    /// what this tier will spend before answering.
+    /// <see cref="UncancellableGrace"/> bounds the work that deliberately does not: audit
+    /// writes (D075), Identity's store calls, and the consultation notification, all of
+    /// which run on <see cref="UncancellableWriteDeadline"/> from the moment the first
+    /// bound fires.
+    ///
+    /// WHAT THE SUM DOES NOT COVER, stated because this comment used to say "there is
+    /// nothing else: the sum is the whole of what this tier will spend" while the class
+    /// docstring twenty lines up said the opposite about the same two round trips. A
+    /// transaction's BEGIN and COMMIT are not <c>DbCommand</c>s and are not on this
+    /// deadline: <c>AtomicWrites</c> begins on the caller's token and commits on
+    /// <c>CancellationToken.None</c>. Neither is an oversight and neither is fixable by
+    /// passing a token — SqlClient implements both synchronously, so a token can only
+    /// refuse to START one, and refusing to start a COMMIT whose writes are already staged
+    /// would roll back a decision that has already been made. That is the one thing
+    /// <c>AtomicWrites</c> exists to prevent.
+    ///
+    /// So the honest statement is: this is the ceiling on everything this application can
+    /// bound, plus two SqlClient round trips on an open connection whose only bound is
+    /// SqlClient's own connection semantics. They are microseconds on a healthy connection
+    /// and unbounded on a dead one, and a number nobody has measured would read as a
+    /// decision and is not one (D072). If they ever need bounding, the lever is the
+    /// connection, not a token.
     ///
     /// MEASURED ON THE REAL PATH, not asserted from these constants.
     /// <c>RequestBoundsTests.The_ceiling_is_the_request_bound_plus_the_uncancellable_tail</c>
     /// stalls the audit table, sends the DELETE, and times the response — proving both
     /// halves at once, since a response that arrived before <see cref="Request"/> would
     /// mean there was no tail to bound, and one that arrived after this would mean the
-    /// bound does not hold.
+    /// bound does not hold. Two siblings measure the same relationship on the two paths
+    /// that were outside it:
+    /// <c>AuthenticationTests.A_login_against_a_wedged_database_stops_at_the_ceiling</c> and
+    /// <c>ConsultationIntakeTests.A_notification_that_never_answers_does_not_outlive_the_ceiling</c>.
     /// </summary>
     public static readonly TimeSpan Ceiling = Request + UncancellableGrace;
 }

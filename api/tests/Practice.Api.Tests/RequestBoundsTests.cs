@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Net;
 using System.Globalization;
 using System.Net.Http.Json;
-using System.Reflection;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Identity;
@@ -516,12 +515,124 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
             + "DatabaseTimeouts — including the retry budget it is sized around.");
     }
 
+    // ------------------- the document a compliance reviewer reads (1.17 F3)
+
     /// <summary>
-    /// The repository root, found by walking up from the test assembly.
+    /// docs/SECURITY.md names the token an audit write ACTUALLY runs on.
+    ///
+    /// THIS IS THE ONE CLASS OF DEFECT THIS REPOSITORY KEEPS SHIPPING, and it has now been
+    /// found five times (D072): a control described in prose, in a file nothing compiles,
+    /// with nothing able to notice it going stale. §Audit asserted "No audit write is
+    /// cancellable. IAuditWriter.WriteAsync takes no CancellationToken, and AuditWriter
+    /// saves on CancellationToken.None" for two commits after D090 replaced that token with
+    /// a bounded per-request deadline — so the document a compliance reviewer reads DENIED a
+    /// durability gap the codebase had knowingly accepted, and D012's append-only framing
+    /// rested on the denial.
+    ///
+    /// A DOCUMENT THAT OVERSTATES A GUARANTEE IS WORSE THAN ONE THAT ADMITS A LIMIT. The
+    /// second gets the limit reviewed; the first gets the question closed.
+    ///
+    /// Read out of both files rather than described in either, the same way
+    /// <see cref="The_bff_waits_longer_than_this_api_is_prepared_to_spend"/> reads
+    /// API_TIMEOUT_MS out of the web tree: two trees, one claim, and a test that fails when
+    /// either side moves. Reverting the code to <c>CancellationToken.None</c> fails this
+    /// just as surely as leaving the sentence behind does, which is what makes it a guard
+    /// rather than a spell-check.
+    ///
+    /// Control: the sentence "<c>AuditWriter</c> saves on <c>deadline.Token</c>" in
+    /// docs/SECURITY.md §Audit.
+    /// Reverted to the <c>CancellationToken.None</c> this round replaced — the falsification
+    /// rather than a deletion, because the defect is a WRONG claim and not a missing one —
+    /// → red, "Assert.Equal() Failure: Strings differ, Expected: "deadline.Token", Actual:
+    /// "CancellationToken.None"".
+    /// </summary>
+    [Fact]
+    public void The_security_document_names_the_token_audit_writes_run_on()
+    {
+        var writer = File.ReadAllText(
+            RepoFile("api/src/Practice.Infrastructure/Identity/ProviderAuthenticator.cs"));
+
+        var save = Regex.Match(
+            writer,
+            @"await db\.SaveChangesAsync\(([^)]+)\);",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+
+        Assert.True(
+            save.Success,
+            "AuditWriter.WriteAsync no longer saves in a shape this test can read. The "
+            + "token an audit write runs on is a compliance claim in docs/SECURITY.md, and "
+            + "nothing else relates the two.");
+
+        var security = File.ReadAllText(RepoFile("docs/SECURITY.md"));
+
+        var claimed = Regex.Match(
+            security,
+            @"`AuditWriter` saves on `([^`]+)`",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+
+        Assert.True(
+            claimed.Success,
+            "docs/SECURITY.md §Audit no longer states which token AuditWriter saves on. It "
+            + "is the sentence a compliance reviewer reads to decide whether the audit "
+            + "trail can lose a row, so it has to be there and it has to be right.");
+
+        Assert.Equal(save.Groups[1].Value, claimed.Groups[1].Value);
+    }
+
+    /// <summary>
+    /// EVERY call of the notification seam is bounded — the tree is walked, not listed.
+    ///
+    /// There is one call site today and the measured test in ConsultationIntakeTests
+    /// exercises it. This is the other half: a guard that means "all of them" and holds a
+    /// hard-coded list is a test about the day it was written, and stays green exactly when
+    /// the set grows (docs/TEST_STRATEGY.md; five of these shipped here before D090 swept
+    /// for them). A second caller — a resend from the inbox, a retry job — arrives bounded
+    /// or arrives red.
+    ///
+    /// It matches INVOCATIONS, not declarations: the leading dot is what separates
+    /// <c>notifier.NotifyAsync(id)</c> from <c>Task NotifyAsync(Guid id)</c> on the
+    /// interface and its implementations.
+    ///
+    /// Control: the <c>.WaitAsync(deadline.Token)</c> on the notifier call in
+    /// ConsultationEndpoints.SubmitConsultationRequest.
+    /// Deleted → red, "IConsultationNotifier holds no CancellationToken by design (D079),
+    /// so the call site is the only place its work can be bounded. Unbounded call(s):
+    /// ConsultationEndpoints.cs:305. …"
+    /// </summary>
+    [Fact]
+    public void Every_call_of_the_notification_seam_is_bounded()
+    {
+        var unbounded = Directory
+            .EnumerateFiles(RepoFile("api/src"), "*.cs", SearchOption.AllDirectories)
+            .SelectMany(path => File.ReadAllLines(path)
+                .Select((text, index) => (Path: path, Line: index + 1, Text: text))
+                .Where(line => line.Text.Contains(".NotifyAsync(", StringComparison.Ordinal))
+                .Where(line => !line.Text.Contains(
+                    ".WaitAsync(deadline.Token)", StringComparison.Ordinal)))
+            .Select(line => $"{Path.GetFileName(line.Path)}:{line.Line}")
+            .ToArray();
+
+        Assert.True(
+            unbounded.Length == 0,
+            "IConsultationNotifier holds no CancellationToken by design (D079), so the call "
+            + "site is the only place its work can be bounded. Unbounded call(s): "
+            + string.Join(", ", unbounded)
+            + ". A notifier that outlives DatabaseTimeouts.Ceiling moves the number the "
+            + "BFF's API_TIMEOUT_MS is sized against, and the real mail transport is a "
+            + "network call to somebody else's infrastructure.");
+    }
+
+    /// <summary>
+    /// A path inside the repository, found by walking up from the test assembly.
     ///
     /// The build output sits several directories below the tree, and the depth differs
-    /// between a local run and CI. Walking up to the file being asserted on is the version
+    /// between a local run and CI. Walking up to the thing being asserted on is the version
     /// that does not encode either.
+    ///
+    /// Files AND directories, because one of the guards above walks a whole source tree
+    /// rather than naming the files in it — which is the point of that guard.
     /// </summary>
     private static string RepoFile(string relativePath)
     {
@@ -530,7 +641,7 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
              dir = dir.Parent)
         {
             var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
         }
 
         throw new FileNotFoundException(
@@ -546,38 +657,16 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
     /// the configured value instead of restating the literal, which is the whole point of
     /// this class. A rename throws with the type's name in the message rather than passing
     /// quietly.
+    ///
+    /// <see cref="ProtectedMember"/> does the lookup, shared with the Identity manager's
+    /// <c>CancellationToken</c> — the same problem, one framework type over.
     /// </summary>
     private static (int Retries, TimeSpan Backoff) RetryPolicyOf(IExecutionStrategy strategy)
     {
-        var retries = Protected(strategy, "MaxRetryCount");
-        var backoff = Protected(strategy, "MaxRetryDelay");
+        var retries = ProtectedMember.Read(strategy, "MaxRetryCount");
+        var backoff = ProtectedMember.Read(strategy, "MaxRetryDelay");
 
         return ((int)retries, (TimeSpan)backoff);
-    }
-
-    /// <summary>
-    /// One instance property, looked up down the whole inheritance chain.
-    ///
-    /// <c>Type.GetProperty</c> searches the type it is asked about and its PUBLIC
-    /// inheritance, which is not enough to be sure of finding a member EF may make
-    /// protected again: these are declared on <see cref="ExecutionStrategy"/> while the
-    /// object is a <c>SqlServerRetryingExecutionStrategy</c>. Walking the chain with
-    /// <c>DeclaredOnly</c> finds it either way, and throws by name if EF removes it.
-    /// </summary>
-    private static object Protected(object instance, string name)
-    {
-        const BindingFlags Declared = BindingFlags.Instance
-            | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly;
-
-        for (var type = instance.GetType(); type is not null; type = type.BaseType)
-        {
-            var property = type.GetProperty(name, Declared);
-            if (property is not null) return property.GetValue(instance)!;
-        }
-
-        throw new InvalidOperationException(
-            $"{instance.GetType().Name} no longer exposes {name}. The retry budget has to be "
-            + "read from the configured execution strategy, not restated in this test.");
     }
 
     /// <summary>A client carrying the forwarded provider identity.</summary>

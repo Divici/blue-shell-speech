@@ -28,11 +28,22 @@ namespace Practice.Infrastructure.Persistence;
 ///      pooled connection on a container that scales to zero, before waking up to begin a
 ///      transaction on a token that has been cancelled the whole time.
 ///
-///   4. The commit runs on CancellationToken.None.
+///   4. The commit runs on CancellationToken.None — NOT on the uncancellable-write
+///      deadline, and that distinction was worth an argument.
 ///      Everything before it is abandonable — if the request goes away the transaction
 ///      disposes uncommitted and nothing happened. Once the writes are staged the decision
 ///      is made, and abandoning the commit is the one remaining action that could leave the
 ///      set half-applied.
+///      Every other uncancellable write in this application runs on
+///      UncancellableWriteDeadline.Token, so that DatabaseTimeouts.Ceiling is a number
+///      somebody can state. This one deliberately does not, because the deadline would
+///      make it WORSE rather than bounded: DbTransaction.CommitAsync checks the token
+///      before it starts and returns a cancelled task, so an expired deadline would roll
+///      back a decision that has already been taken — losing the delete AND the audit row
+///      inside it, which is precisely what this helper exists to prevent. SqlClient runs
+///      the round trip synchronously anyway, so a token could never interrupt one in
+///      flight; it could only refuse to begin. BEGIN and COMMIT are therefore outside the
+///      ceiling, and DatabaseTimeouts.Ceiling says so rather than claiming to cover them.
 ///
 /// THE CONTRACT ON THE BODY: it runs more than once, so it must RE-READ every entity it
 /// touches, RE-CHECK every rule it depends on, and CONSTRUCT every entity it inserts, on

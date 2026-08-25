@@ -76,6 +76,7 @@ public static class ConsultationEndpoints
         PracticeDbContext db,
         IAuditWriter audit,
         IConsultationNotifier notifier,
+        UncancellableWriteDeadline deadline,
         TimeProvider clock,
         CancellationToken ct)
     {
@@ -280,10 +281,47 @@ public static class ConsultationEndpoints
          * mailbox was unreachable would be a lie in the other direction, and they would
          * submit again. The cost is real and stated: a notification lost this way is not
          * retried, and Michelle finds the enquiry when she next signs in.
+         *
+         * AND IT IS BOUNDED, WHICH IT WAS NOT. IConsultationNotifier takes no
+         * CancellationToken for the same reason IAuditWriter takes none — with one present
+         * CA2016 makes every call site forward the request's, and the analyser would
+         * enforce the defect (D075, D079) — but unlike an audit write it was on NO bound at
+         * all. That was invisible while the implementation wrote a log line and would have
+         * stopped being invisible the day the real mail transport landed: a network call to
+         * somebody else's infrastructure, on no token, after the request bound has already
+         * fired, silently moving DatabaseTimeouts.Ceiling — the number the BFF's
+         * API_TIMEOUT_MS is sized against.
+         *
+         * WaitAsync rather than a token handed to the notifier, because the seam has
+         * nowhere to put one, and because what needs bounding is when THIS TIER ANSWERS. A
+         * transport abandoned here keeps running in the background and is not cancelled;
+         * that is the honest limit of this bound and it is the right one for a
+         * notification, where the enquiry is already committed and the send is best effort.
+         * It would be exactly the wrong bound on a commit, which is why AtomicWrites does
+         * not have one.
          */
         try
         {
-            await notifier.NotifyAsync(publicId);
+            await notifier.NotifyAsync(publicId).WaitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            /*
+             * ABANDONED AT THE CEILING, AND THE PARENT IS STILL TOLD THE TRUTH.
+             *
+             * Falling through to the 201 is the whole point. The row is committed by now,
+             * and web/lib/api/consultations.ts reads !response.ok as {stored: false} — so
+             * letting this escape would tell a family their enquiry was not recorded when
+             * it was, which is the defect D086 and D090 exist to prevent, reached through a
+             * different door.
+             *
+             * NO AUDIT ROW HERE, deliberately: an audit write needs the same grace this
+             * notification has just exhausted, so it would throw on an already-cancelled
+             * token and the request would 500 on the way to recording that something did
+             * not happen. Named as a gap rather than papered over — a notification lost
+             * this way leaves nothing behind, and WORK_QUEUE 4.6 owns the alerting that
+             * would notice a notification path which has stopped working.
+             */
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

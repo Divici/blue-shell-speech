@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -523,9 +525,11 @@ public sealed class ConsultationIntakeTests(SqlServerFixture sql) : IAsyncLifeti
     /// <summary>
     /// A stored enquiry is announced once, carrying its opaque id.
     ///
-    /// Control: the <c>await notifier.NotifyAsync(publicId)</c> call in
-    /// SubmitConsultationRequest.
-    /// Deleted → red, "Assert.Single() Failure: The collection was empty".
+    /// Control: the <c>await notifier.NotifyAsync(publicId).WaitAsync(deadline.Token)</c>
+    /// call in SubmitConsultationRequest.
+    /// Deleted → red, "Assert.Single() Failure: The collection was empty". Re-run against
+    /// the new home when that statement gained its <c>WaitAsync</c> bound (D077): same
+    /// deletion, same message.
     /// </summary>
     [Fact]
     public async Task A_stored_enquiry_is_announced_exactly_once()
@@ -555,8 +559,16 @@ public sealed class ConsultationIntakeTests(SqlServerFixture sql) : IAsyncLifeti
     /// succeeds cannot tell "announced afterwards" from "announced inside".
     ///
     /// Control: the position of the NotifyAsync call, AFTER WriteAtomicallyAsync returns.
-    /// Moved inside the write body → red, "Assert.Empty() Failure: Collection was not
-    /// empty".
+    /// Moved inside the write body, immediately after the row is saved and BEFORE the audit
+    /// write → red, "Assert.Empty() Failure: Collection was not empty, Collection:
+    /// [7acbbd43-…]".
+    ///
+    /// WHERE inside the body matters, which the earlier version of this line did not say
+    /// and which is worth knowing before somebody re-runs it. Moved to the END of the body,
+    /// after <c>audit.WriteAsync</c>, the test stays GREEN — this harness breaks the audit
+    /// write, so the notifier is never reached and "nothing was announced" is true for the
+    /// wrong reason. Re-run at both positions when the statement gained its
+    /// <c>WaitAsync(deadline.Token)</c> bound (D077).
     /// </summary>
     [Fact]
     public async Task An_enquiry_that_could_not_be_stored_is_never_announced()
@@ -647,7 +659,11 @@ public sealed class ConsultationIntakeTests(SqlServerFixture sql) : IAsyncLifeti
     ///
     /// Control: the try/catch around notifier.NotifyAsync in SubmitConsultationRequest.
     /// Deleted → red, "Assert.Equal() Failure: Values differ, Expected: Created, Actual:
-    /// InternalServerError".
+    /// InternalServerError". Re-run when that block gained a second clause — a
+    /// <c>catch (OperationCanceledException)</c> for a notification abandoned at the
+    /// ceiling, which falls through to the 201 deliberately (D077): same deletion, same
+    /// message. The two clauses are not interchangeable and neither covers for the other:
+    /// this test's mailbox THROWS, so it exercises the second clause only.
     /// </summary>
     [Fact]
     public async Task A_failed_notification_leaves_the_enquiry_stored_and_records_the_failure()
@@ -669,6 +685,112 @@ public sealed class ConsultationIntakeTests(SqlServerFixture sql) : IAsyncLifeti
 
         // The arrival is still recorded as a success — it happened.
         Assert.Single(await AuditEventsAsync(AuditEventType.ConsultationRequestReceived));
+    }
+
+    /// <summary>
+    /// A mailbox that never answers does not hold the parent past this tier's ceiling — and
+    /// the parent is still told the enquiry was stored, because it was.
+    ///
+    /// WHY THIS IS ABOUT A CLASS THAT HAS NOT LANDED YET. <c>IConsultationNotifier</c> takes
+    /// no CancellationToken, for the same reason IAuditWriter takes none (D075, D079): with
+    /// one present, CA2016 forces every call site holding a token to forward it, and the
+    /// analyser would enforce the defect. But unlike an audit write, this seam was on NO
+    /// bound at all — not the request timeout it cannot observe, and not the
+    /// uncancellable-write deadline either. That was harmless only while the implementation
+    /// wrote a log line. The real mail transport is queued (WORK_QUEUE, Blocked — needs
+    /// David), it is a network call to somebody else's infrastructure, and the day it lands
+    /// it would silently move <c>DatabaseTimeouts.Ceiling</c> — the number the BFF's
+    /// API_TIMEOUT_MS is sized against, and the number a parent's "was my enquiry stored?"
+    /// depends on. This test is what makes that landing safe: it fails on any notifier that
+    /// outlives the ceiling, whoever writes it.
+    ///
+    /// Both halves of the claim are in the elapsed time, for the same reason
+    /// <c>RequestBoundsTests.The_ceiling_is_the_request_bound_plus_the_uncancellable_tail</c>
+    /// asserts both: a response arriving before the request bound would mean there was no
+    /// tail to bound and the test proved nothing.
+    ///
+    /// AND THE STATUS IS PART OF THE CLAIM. Abandoning the notification must not turn into a
+    /// 500 — the row is committed by then, and <c>web/lib/api/consultations.ts</c> reads
+    /// <c>!response.ok</c> as <c>{stored: false}</c>, which tells a family their enquiry was
+    /// not recorded when it was. That is the defect D086 and D090 exist to prevent, reached
+    /// by a different door.
+    ///
+    /// Control: the <c>.WaitAsync(deadline.Token)</c> on the notifier call in
+    /// ConsultationEndpoints.SubmitConsultationRequest.
+    /// Deleted → red after 20 seconds, "The notification held the request for 20.2s past a
+    /// 1s request bound. IConsultationNotifier holds no request token by design, so unless
+    /// the call site bounds it the ceiling DatabaseTimeouts.Ceiling states is whatever a
+    /// mail transport feels like taking — and the BFF's API_TIMEOUT_MS is sized against
+    /// that number."
+    /// </summary>
+    [Fact]
+    public async Task A_notification_that_never_answers_does_not_outlive_the_ceiling()
+    {
+        await SeedActiveProvidersAsync(1);
+
+        var requestBound = TimeSpan.FromSeconds(1);
+        var grace = TimeSpan.FromSeconds(2);
+        var unanswering = TimeSpan.FromSeconds(20);
+
+        using var api = Api(
+            new SilentMailbox(unanswering),
+            services =>
+            {
+                // A distant backstop, so the deadline arriving on time is attributable to
+                // ProviderContextMiddleware's binding rather than to the fallback.
+                FailureHarness.BoundedBy(services, backstop: TimeSpan.FromSeconds(60), grace);
+
+                services.Configure<RequestTimeoutOptions>(options => options.DefaultPolicy =
+                    new RequestTimeoutPolicy { Timeout = requestBound });
+            });
+
+        using var client = api.CreateClient();
+
+        // Warm the host, the pool and the query plans, so what is measured below is the
+        // request rather than everything a first request drags in with it.
+        (await client.GetAsync("/health/live")).Dispose();
+
+        var started = Stopwatch.GetTimestamp();
+        using var response = await client.PostAsJsonAsync(
+            "/consultation-requests", NewSubmission());
+        var elapsed = Stopwatch.GetElapsedTime(started);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1, await RequestCountAsync());
+
+        Assert.True(
+            elapsed > requestBound,
+            $"The response arrived in {elapsed.TotalSeconds:0.0}s, within the "
+            + $"{requestBound.TotalSeconds:0}s request bound. This test has to reach a "
+            + "notification that is still running when that bound fires, or it measures "
+            + "nothing.");
+
+        var ceiling = requestBound + grace + TimeSpan.FromSeconds(3);
+
+        Assert.True(
+            elapsed < ceiling,
+            $"The notification held the request for {elapsed.TotalSeconds:0.0}s past a "
+            + $"{requestBound.TotalSeconds:0}s request bound. IConsultationNotifier holds "
+            + "no request token by design, so unless the call site bounds it the ceiling "
+            + "DatabaseTimeouts.Ceiling states is whatever a mail transport feels like "
+            + "taking — and the BFF's API_TIMEOUT_MS is sized against that number.");
+    }
+
+    /// <summary>
+    /// A mailbox that accepts the message and never answers.
+    ///
+    /// The shape a real transport fails in far more often than by throwing: a TCP
+    /// connection to a mail service that is up but wedged. <see cref="UnreachableMailbox"/>
+    /// covers the loud failure; nothing covered the quiet one, which is the one that moves
+    /// a ceiling.
+    ///
+    /// It waits on its OWN token — not the caller's, which it has none of — so it stops
+    /// only when whatever is bounding it stops it. That is the point: a notifier that
+    /// cooperated would prove nothing about the bound.
+    /// </summary>
+    private sealed class SilentMailbox(TimeSpan silence) : IConsultationNotifier
+    {
+        public Task NotifyAsync(Guid consultationRequestPublicId) => Task.Delay(silence);
     }
 
     // ---------------------------------------------------------- hostile input

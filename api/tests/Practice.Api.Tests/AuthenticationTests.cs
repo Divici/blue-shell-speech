@@ -1,6 +1,10 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
+using System.Reflection;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using OtpNet;
 using Practice.Api.Auth;
@@ -268,6 +272,256 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
         Assert.DoesNotContain(metadata, m => m is not null && m.Contains(Password, StringComparison.Ordinal));
         Assert.DoesNotContain(metadata, m => m is not null && m.Contains(email, StringComparison.OrdinalIgnoreCase));
     }
+
+    // -------------------------------------------- the bounds the login path observes (1.17 F1)
+
+    /*
+     * EVERY DATABASE CALL IN ProviderAuthenticator GOES THROUGH UserManager<PracticeUser>,
+     * AND NOT ONE OF ITS METHODS TAKES A CancellationToken.
+     *
+     * FindByEmailAsync, CheckPasswordAsync, AccessFailedAsync, ResetAccessFailedCountAsync,
+     * GetTwoFactorEnabledAsync, VerifyTwoFactorTokenAsync, UpdateAsync — none of them has an
+     * overload that accepts one. So for as long as the authenticator was written the obvious
+     * way, the login path observed NEITHER of this application's two bounds: not
+     * HttpContext.RequestAborted, and not the uncancellable-write deadline that
+     * DatabaseTimeouts.Ceiling is made of.
+     *
+     * Both consequences are real and they point in opposite directions:
+     *
+     *   * a login against a database resuming from auto-pause ran on with no bound at all,
+     *     past the request bound and past the ceiling the BFF is sized against;
+     *   * and because that unbounded work spent the shared grace, the audit row written
+     *     AFTER it found a deadline that had already expired — and a cancelled token stays
+     *     cancelled, so the write threw instantly rather than getting a short go. The one
+     *     row recording a failed credential attempt was lost precisely when somebody was
+     *     attacking the account, which is the only time it matters.
+     *
+     * Fixing twenty call sites was never the answer. UserManager funnels every store call
+     * through one protected CancellationToken property, so overriding it binds all of them
+     * at once — including the ones nobody has written yet.
+     */
+
+    /// <summary>
+    /// The UserManager the application resolves runs its store calls on the deadline.
+    ///
+    /// ONE ASSERTION FOR EVERY CALL SITE, which is why it is worth having as well as the
+    /// measured tests below. The alternative — listing the seven methods the reviewer found
+    /// — is a guard over a set that holds a hard-coded list, and stays green the day an
+    /// eighth is called (docs/TEST_STRATEGY.md, D090). The property is the only lever, and
+    /// the second assertion here is what establishes that: it walks UserManager's own
+    /// asynchronous surface and reports how much of it cannot be handed a token, so if a
+    /// future Identity ever grows the overloads, this goes red and the design is worth
+    /// revisiting rather than silently kept.
+    ///
+    /// Control: the <c>.AddUserManager&lt;PracticeUserManager&gt;()</c> call in
+    /// InfrastructureServices.AddInfrastructure.
+    /// Deleted → red, "UserManager`1 runs its store calls on a token that is not the
+    /// request scope's UncancellableWriteDeadline, so none of the 82 token-less methods on
+    /// UserManager observes any bound at all — not the request timeout, and not
+    /// DatabaseTimeouts.Ceiling." That deletion is the realistic silent failure: the class
+    /// still exists, the build is green, and Identity resolves the base manager.
+    ///
+    /// Control: <c>PracticeUserManager.CancellationToken</c> itself, the override the class
+    /// exists for.
+    /// Neutered to <c>CancellationToken.None</c> — the base's own value — → the BUILD
+    /// refuses it: "error CS9113: Parameter 'deadline' is unread." Recorded because it is
+    /// the more useful fact: the override cannot be quietly emptied, only the registration
+    /// can, which is why the registration is the control this line names first.
+    /// </summary>
+    [Fact]
+    public void Every_identity_store_call_is_bounded_by_the_deadline()
+    {
+        var tokenless = typeof(UserManager<PracticeUser>)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(method => method.Name.EndsWith("Async", StringComparison.Ordinal))
+            .Where(method => !method.GetParameters()
+                .Any(parameter => parameter.ParameterType == typeof(CancellationToken)))
+            .Select(method => method.Name)
+            .Distinct()
+            .ToArray();
+
+        Assert.True(
+            tokenless.Length > 0,
+            "UserManager now offers CancellationToken overloads. The whole reason this "
+            + "application overrides the protected CancellationToken property is that it "
+            + "did not, so revisit PracticeUserManager rather than deleting this test.");
+
+        using var scope = _factory.CreateScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<PracticeUser>>();
+        var deadline = scope.ServiceProvider.GetRequiredService<UncancellableWriteDeadline>();
+
+        var bound = (CancellationToken)ProtectedMember.Read(users, "CancellationToken");
+
+        Assert.True(
+            bound == deadline.Token,
+            $"{users.GetType().Name} runs its store calls on a token that is not the "
+            + "request scope's UncancellableWriteDeadline, so none of the "
+            + $"{tokenless.Length} token-less methods on UserManager observes any bound at "
+            + "all — not the request timeout, and not DatabaseTimeouts.Ceiling.");
+    }
+
+    /// <summary>
+    /// A wrong password leaves its audit row even when the bookkeeping that follows outlives
+    /// the grace.
+    ///
+    /// THE SHAPE OF THE FAILURE THIS PINS. A phone locks a fifth of a second into a login;
+    /// the request bound fires; the grace starts; the failure-count UPDATE then sits against
+    /// a database that is refusing work for longer than the grace lasts. Under the code this
+    /// test was written against, the LoginFailed row was written after that UPDATE, on a
+    /// deadline the UPDATE had already exhausted — and a cancelled token stays cancelled, so
+    /// SaveChangesAsync threw before issuing anything and the row was lost.
+    ///
+    /// The lookup is stalled too, and for a reason: the request bound has to fire BEFORE the
+    /// outcome is decided, or the audit write happens on a deadline that is still whole and
+    /// the test proves nothing. 1.5s against a 1s bound puts the cancellation inside the
+    /// lookup, so the grace is already running by the time there is anything to audit.
+    ///
+    /// Scaled — 1s and 2s against production's 10m20s and 90s — because the relationship is
+    /// what is under test and nothing can be measured against twelve minutes.
+    ///
+    /// Control: the ORDER of the two writes in VerifyPasswordAsync's bad-password branch —
+    /// the <c>audit.WriteAsync</c> call preceding <c>userManager.AccessFailedAsync</c>.
+    /// Swapped back, which is how it was written → red after 3s, "Assert.Contains()
+    /// Failure: Item not found in collection / Collection: [] / Not found:
+    /// "reason=bad-password"". An empty collection, not a late row: the deadline is spent
+    /// by the time the write starts and a cancelled token stays cancelled, so the save
+    /// throws before issuing anything.
+    ///
+    /// Deleting <c>.AddUserManager&lt;PracticeUserManager&gt;()</c> leaves this test GREEN,
+    /// correctly — an unbounded UPDATE finishes and the audit row lands either way. That is
+    /// <see cref="A_login_against_a_wedged_database_stops_at_the_ceiling"/>'s control, and
+    /// the two tests exist separately because F1 is two defects wearing one coat: work that
+    /// observes no bound, and a row lost because of it.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_login_is_audited_even_when_the_bookkeeping_outlives_the_grace()
+    {
+        var (userId, email) = await SeedProviderAsync();
+
+        var requestBound = TimeSpan.FromSeconds(1);
+        var grace = TimeSpan.FromSeconds(2);
+
+        using var stalled = StalledFactory(
+            requestBound,
+            grace,
+            new StallsEveryStatementMatching("FROM [AspNetUsers]", TimeSpan.FromMilliseconds(1500)),
+            new StallsEveryStatementMatching("UPDATE [AspNetUsers]", TimeSpan.FromSeconds(20)));
+
+        using var client = stalled.CreateClient();
+
+        // Warm the host and the pool, so the bound below fires inside the lookup rather
+        // than inside everything a first request drags in with it.
+        (await client.GetAsync("/health/live")).Dispose();
+
+        using var response = await client.PostAsJsonAsync(
+            "/auth/password", new PasswordRequest(email, "wrong-password-here"));
+        response.Dispose();
+
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var reasons = await db.AuditEvents
+            .AsNoTracking()
+            .Where(e => e.ActorUserId == userId && e.EventType == AuditEventType.LoginFailed)
+            .Select(e => e.Metadata)
+            .ToListAsync();
+
+        Assert.Contains(
+            "reason=bad-password",
+            reasons.Where(reason => reason is not null)!,
+            StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// A login against a database that will not answer stops at the ceiling, like every
+    /// other request.
+    ///
+    /// The failure-count UPDATE is stalled for twenty seconds and nothing else is, so what
+    /// the clock measures is the Identity store call and nothing around it. Both halves of
+    /// the claim are in the elapsed time, for the same reason
+    /// <c>RequestBoundsTests.The_ceiling_is_the_request_bound_plus_the_uncancellable_tail</c>
+    /// asserts both: a response arriving before the request bound would mean there was no
+    /// uncancellable work to bound and the test proved nothing, and one arriving after the
+    /// ceiling would mean the bound does not hold.
+    ///
+    /// A NOTE ON WHY THIS IS NOT THE REQUEST'S TOKEN. Handing UserManager
+    /// HttpContext.RequestAborted would bound it too, and would also let an attacker skip
+    /// the lockout counter entirely: send a password guess, close the socket before
+    /// AccessFailedAsync commits, and the five-failure lockout in AddInfrastructure never
+    /// counts to five. The failure count is the same category of write as an audit row —
+    /// something that already happened, which the caller going away does not un-happen.
+    ///
+    /// Control: the <c>.AddUserManager&lt;PracticeUserManager&gt;()</c> call in
+    /// InfrastructureServices.AddInfrastructure.
+    /// Deleted → red after 20 seconds, "The login ran for 20.2s against a 1s request bound
+    /// and a 2s grace. UserManager takes no CancellationToken on any of its methods, so
+    /// unless the manager the application resolves binds its store calls to the deadline,
+    /// the whole login path sits outside both of this tier's bounds and
+    /// DatabaseTimeouts.Ceiling is not a ceiling." Twenty seconds is the whole stall: the
+    /// bound contributed nothing at all, which is exactly the shape of the finding.
+    /// </summary>
+    [Fact]
+    public async Task A_login_against_a_wedged_database_stops_at_the_ceiling()
+    {
+        var (_, email) = await SeedProviderAsync();
+
+        var requestBound = TimeSpan.FromSeconds(1);
+        var grace = TimeSpan.FromSeconds(2);
+        var wedged = TimeSpan.FromSeconds(20);
+
+        using var stalled = StalledFactory(
+            requestBound,
+            grace,
+            new StallsEveryStatementMatching("UPDATE [AspNetUsers]", wedged));
+
+        using var client = stalled.CreateClient();
+        (await client.GetAsync("/health/live")).Dispose();
+
+        var started = Stopwatch.GetTimestamp();
+        using var response = await client.PostAsJsonAsync(
+            "/auth/password", new PasswordRequest(email, "wrong-password-here"));
+        var elapsed = Stopwatch.GetElapsedTime(started);
+
+        Assert.True(
+            elapsed > requestBound,
+            $"The response arrived in {elapsed.TotalSeconds:0.0}s, within the "
+            + $"{requestBound.TotalSeconds:0}s request bound. This test has to reach an "
+            + "Identity store call that is still running when that bound fires, or it "
+            + "measures nothing — check that the failure-count UPDATE is the statement "
+            + "being stalled.");
+
+        // The grace, plus room for the host: the claim is that a bound holds, not that it
+        // fires at an exact instant. The alternative it is separating itself from is 20s.
+        var ceiling = requestBound + grace + TimeSpan.FromSeconds(3);
+
+        Assert.True(
+            elapsed < ceiling,
+            $"The login ran for {elapsed.TotalSeconds:0.0}s against a "
+            + $"{requestBound.TotalSeconds:0}s request bound and a "
+            + $"{grace.TotalSeconds:0}s grace. UserManager takes no CancellationToken on "
+            + "any of its methods, so unless the manager the application resolves binds "
+            + "its store calls to the deadline, the whole login path sits outside both of "
+            + "this tier's bounds and DatabaseTimeouts.Ceiling is not a ceiling.");
+    }
+
+    /// <summary>
+    /// The application's own pipeline, scaled down, with named statements made to hang.
+    ///
+    /// The backstop is deliberately far away (60s), so that the deadline arriving on time is
+    /// attributable to ProviderContextMiddleware's binding rather than to the fallback the
+    /// deadline uses when nothing binds it — the same reason
+    /// <c>FailureHarness.BoundedBy</c> takes the two arguments separately.
+    /// </summary>
+    private PracticeApiFactory StalledFactory(
+        TimeSpan requestBound, TimeSpan grace, params IInterceptor[] interceptors) =>
+        new(sql.ConnectionString, services =>
+        {
+            FailureHarness.With(sql.ConnectionString, interceptors)(services);
+            FailureHarness.BoundedBy(services, backstop: TimeSpan.FromSeconds(60), grace);
+
+            services.Configure<RequestTimeoutOptions>(options =>
+                options.DefaultPolicy = new RequestTimeoutPolicy { Timeout = requestBound });
+        });
 
     // ---------------------------------------------------------------- helpers
 

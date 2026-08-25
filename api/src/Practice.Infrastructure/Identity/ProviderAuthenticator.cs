@@ -11,7 +11,7 @@ namespace Practice.Infrastructure.Identity;
 /// <summary>
 /// Identity-backed implementation of the authentication flow.
 ///
-/// TWO THINGS HERE ARE DELIBERATE AND EASY TO GET WRONG:
+/// THREE THINGS HERE ARE DELIBERATE AND EASY TO GET WRONG:
 ///
 /// 1. A correct password NEVER produces a session. It returns RequiresMfa. MFA is
 ///    mandatory (docs/SECURITY.md) — this account holds every patient record in the
@@ -20,6 +20,32 @@ namespace Practice.Infrastructure.Identity;
 /// 2. Failure reasons are distinguished for the AUDIT LOG, not for the caller to show.
 ///    "No such user" versus "wrong password" tells an attacker which emails are real.
 ///    The BFF collapses them into one message.
+///
+/// 3. THE AUDIT ROW IS WRITTEN AS SOON AS THE OUTCOME IS DECIDED, BEFORE THE BOOKKEEPING
+///    THAT FOLLOWS IT. Every failure branch below reads "audit, then AccessFailedAsync",
+///    which looks like an arbitrary ordering and is not.
+///
+///    Both writes are uncancellable by design — a failed login has already happened, and
+///    the caller going away does not un-happen it — so both draw on the same
+///    UncancellableWriteDeadline, which gives the whole request ONE grace period after the
+///    request bound fires (D090). They therefore COMPETE, and the order decides which one
+///    survives a database that is refusing work. Written the obvious way round, a
+///    failure-count UPDATE carrying a resume from auto-pause spent the entire grace and
+///    the LoginFailed row that followed it hit an already-cancelled token — a cancelled
+///    token stays cancelled, so the save threw before issuing anything and the row was
+///    lost outright rather than merely being late.
+///
+///    THE AUDIT ROW WINS THAT COMPETITION, and the reason is asymmetric rather than a
+///    preference. Lose the row and there is no evidence the attempt ever happened; the
+///    response is deliberately indistinguishable from every other refusal, so nothing else
+///    in the system records it. Lose the increment and the attempt is still on file — the
+///    LoginFailed rows can be counted, and a lockout that failed to fire is visible after
+///    the fact. One loss is recoverable and the other is not.
+///
+///    It is not a complete defence and should not be read as one: if the grace is gone
+///    before the outcome is even decided, the lookup is cancelled and there is no
+///    established fact to audit. That is the honest boundary — this application does not
+///    fabricate a row for an attempt it never finished evaluating.
 /// </summary>
 public sealed class ProviderAuthenticator(
     UserManager<PracticeUser> userManager,
@@ -64,12 +90,14 @@ public sealed class ProviderAuthenticator(
 
         if (!await userManager.CheckPasswordAsync(user, password))
         {
-            // Increments the failure count; this is what eventually triggers lockout.
-            await userManager.AccessFailedAsync(user);
-
+            // AUDIT FIRST. See point 3 on the class: both writes are uncancellable and
+            // share one grace, so the order is which of them survives a wedged database.
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
                 actorUserId: user.Id, metadata: "reason=bad-password"));
+
+            // Increments the failure count; this is what eventually triggers lockout.
+            await userManager.AccessFailedAsync(user);
 
             return new PasswordResult(PasswordOutcome.InvalidCredentials);
         }
@@ -118,10 +146,12 @@ public sealed class ProviderAuthenticator(
 
         if (!valid)
         {
-            await userManager.AccessFailedAsync(user);
+            // Audit first, then the failure count — see point 3 on the class.
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
                 actorUserId: user.Id, metadata: "reason=bad-mfa-code"));
+
+            await userManager.AccessFailedAsync(user);
 
             return new MfaResult(false);
         }
@@ -140,10 +170,12 @@ public sealed class ProviderAuthenticator(
 
         if (!result.Succeeded)
         {
-            await userManager.AccessFailedAsync(user);
+            // Audit first, then the failure count — see point 3 on the class.
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.LoginFailed, AuditOutcome.Failure,
                 actorUserId: user.Id, metadata: "reason=bad-recovery-code"));
+
+            await userManager.AccessFailedAsync(user);
 
             return new MfaResult(false);
         }
@@ -208,18 +240,26 @@ public sealed class ProviderAuthenticator(
     private async Task<MfaResult> CompleteSignInAsync(
         PracticeUser user, bool usedRecoveryCode, CancellationToken ct)
     {
-        await userManager.ResetAccessFailedCountAsync(user);
-
-        user.LastMfaAtUtc = DateTime.UtcNow;
-        await userManager.UpdateAsync(user);
-
         var provider = await db.Providers
             .AsNoTracking()
             .SingleOrDefaultAsync(p => p.IdentityUserId == user.Id, ct);
 
+        /*
+         * BEFORE the Identity bookkeeping, for the reason on the class.
+         *
+         * The provider lookup has to come first because the row carries the provider id,
+         * and it runs on the REQUEST's token — it is a read, and a read the caller has
+         * abandoned is abandonable. Everything after this point is uncancellable and
+         * competing for one grace, so the row that records the sign-in goes first.
+         */
         await audit.WriteAsync(AuditEvent.Record(
             AuditEventType.LoginSucceeded, AuditOutcome.Success,
             actorUserId: user.Id, providerId: provider?.Id));
+
+        await userManager.ResetAccessFailedCountAsync(user);
+
+        user.LastMfaAtUtc = DateTime.UtcNow;
+        await userManager.UpdateAsync(user);
 
         var remaining = await userManager.CountRecoveryCodesAsync(user);
 
@@ -302,6 +342,15 @@ public sealed class ProviderAuthenticator(
 /// entire budget loses the row, where an unbounded write might eventually have landed it.
 /// A bounded loss beats an audit trail with a survivorship bias toward uninterrupted
 /// requests, which is not an audit trail (docs/SECURITY.md §Audit).
+///
+/// AND THE GRACE IS SHARED WITH MORE THAN AUDIT WRITES, which is the part that turned out
+/// to have teeth. Identity's store calls draw on the same deadline (PracticeUserManager) —
+/// they have to, because none of UserManager's methods takes a token and an unbounded
+/// login is outside every bound this tier states. So on the authentication path an audit
+/// write and a failure-count UPDATE COMPETE for one grace, and whichever runs first is the
+/// one that survives a database refusing work. ProviderAuthenticator therefore audits
+/// before it does its bookkeeping, deliberately; see point 3 on that class for why the row
+/// is the half worth keeping. Ordering is a real control here, not a style choice.
 /// </summary>
 public interface IAuditWriter
 {

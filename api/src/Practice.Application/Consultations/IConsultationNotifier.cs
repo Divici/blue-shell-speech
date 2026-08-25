@@ -26,6 +26,25 @@ namespace Practice.Application.Consultations;
 /// so a token parameter would force every call site holding one to forward it — the
 /// analyser would enforce the defect. Leaving nothing to forward is the only version of
 /// this the toolchain agrees with.
+///
+/// NO TOKEN IS NOT THE SAME AS NO BOUND, AND FOR TWO COMMITS IT WAS. IAuditWriter observes
+/// no token either and is nevertheless bounded, because AuditWriter saves on the
+/// per-request UncancellableWriteDeadline (D090) — which is what makes
+/// DatabaseTimeouts.Ceiling a number the BFF's API_TIMEOUT_MS can be sized against. This
+/// seam had neither, which was harmless only while the implementation wrote a log line.
+/// The real mail transport is queued and it is a network call to somebody else's
+/// infrastructure: on no bound, after the request timeout has already fired, it would have
+/// moved that ceiling the day it landed and nothing would have gone red.
+///
+/// SO THE CALL SITE BOUNDS IT — <c>ConsultationEndpoints.SubmitConsultationRequest</c>
+/// awaits this with <c>.WaitAsync(deadline.Token)</c>, and
+/// <c>RequestBoundsTests.Every_call_of_the_notification_seam_is_bounded</c> walks api/src
+/// so a second caller arrives bounded or arrives red. That bounds the WAIT and not the
+/// work: an abandoned transport keeps running in the background. For a notification that
+/// is the right trade, because the enquiry is already committed and the send is best
+/// effort — an implementation doing real I/O should still take
+/// <c>UncancellableWriteDeadline</c> from DI and pass its token to whatever client it
+/// uses, so the work stops as well as the waiting.
 /// </summary>
 public interface IConsultationNotifier
 {

@@ -17,12 +17,19 @@ ASP.NET Core Identity, self-hosted. No external IdP.
 |---|---|
 | Password hashing | Identity default (PBKDF2, current iteration count). Never custom crypto |
 | Minimum length | 12 characters. **No composition rules, no forced rotation** — both push users toward weaker, reused, written-down passwords (NIST SP 800-63B) |
-| Breached-password check | Rejected against a known-compromised list at set time |
+| Breached-password check | **NOT BUILT.** No compromised-password validator is registered in `AddInfrastructure`. Intended, unqueued |
 | **MFA** | **TOTP, mandatory, not optional.** Single account holding all PHI |
 | Recovery codes | Generated once, hashed at rest, single-use, regenerable. Treated as credentials |
-| Lockout | Exponential backoff after 5 failures; `LoginFailed` audited with IP |
-| Session | `HttpOnly`, `Secure`, `SameSite=Lax`, sliding 30 min, absolute 12 h |
+| Lockout | Fixed **15 minutes** after 5 failures (`IdentityOptions.DefaultLockoutTimeSpan`), not exponential. `LoginFailed` is audited with the reason and the actor; **it does not carry an IP** — `AuditEvent.IpAddress` is filled on patient reads only. Rate limiting on login is WORK_QUEUE 4.3 |
+| Session | `HttpOnly`, `Secure`, `SameSite=Lax`, sliding 30 min, absolute 12 h (`web/lib/auth/session.ts`) |
 | Re-auth | Required to change password, regenerate recovery codes, or disable MFA |
+
+Three rows of that table described controls this application does not have — an exponential
+backoff, an IP on the lockout's audit row, and a breached-password list — and said so in the
+present tense in the document a compliance reviewer reads. That is the same defect as the
+§Audit paragraph below and it is corrected the same way: by saying what the code does. **A
+control described and absent reads as STRONGER than no control at all**, because the next
+person checks whether the question was considered rather than whether it was answered (D072).
 
 **MFA cannot be disabled without re-authentication and an audit event.** The account recovery
 path is the weakest link in any MFA deployment — an attacker who can reset MFA does not need to
@@ -174,11 +181,35 @@ execution strategy, the change tracker reset on every attempt, and the commit on
 tracker still holding what the failed attempt had staged, and wrote **two** `NoteDiscarded`
 rows for one deletion into a table nothing can UPDATE or DELETE (D075).
 
-**No audit write is cancellable.** `IAuditWriter.WriteAsync` takes no `CancellationToken`, and
-`AuditWriter` saves on `CancellationToken.None`. An audit row records something that already
-happened; the caller going away does not un-happen it. This is a property of the seam rather
-than a habit at the call sites, because with a token parameter present CA2016 requires every
-call site inside a method that has one to forward it — the analyzer enforces the defect (D075).
+**No audit write can be cancelled by the caller, and every audit write is bounded.** Those are
+two different statements, and this section used to make only the first in words that denied the
+second — it named `CancellationToken.None` as the token an audit write ran on, for two commits
+after the code had stopped using it.
+
+What is true now: `IAuditWriter.WriteAsync` takes no `CancellationToken`, so no call site can
+hand over the request's — a property of the seam rather than a habit at the call sites, because
+with a token parameter present CA2016 requires every call site inside a method that has one to
+forward it, and the analyzer would enforce the defect (D075).
+And `AuditWriter` saves on `deadline.Token` — a per-request `UncancellableWriteDeadline` that
+does **not** move when the caller goes away, and expires one
+`DatabaseTimeouts.UncancellableGrace` (90 seconds) after the request bound fires, shared once
+between every uncancellable write in that request (D090).
+
+**So there is a durability gap, it was accepted knowingly, and it is stated here rather than
+denied.** If the database is still refusing work 90 seconds after a request has already burned
+its entire 10m20s budget, the audit row is lost, where an unbounded write might eventually have
+landed it. That is the price of a ceiling on a request that anybody can state — without it, an
+uncancellable write ran on past the request timeout and *added* to it, and the tier had no
+stated worst case at all. Two things bound the exposure: every path that writes an audit row has
+already read from this database on the same request, so an audit write is never the query
+carrying a resume from auto-pause; and where two uncancellable writes compete for that one
+grace, the audit row is deliberately performed first (`ProviderAuthenticator` audits a failed
+login before incrementing its failure count, because a lost row leaves no evidence while a lost
+increment leaves countable rows).
+
+`RequestBoundsTests.The_security_document_names_the_token_audit_writes_run_on` reads the token
+out of `AuditWriter` and out of this paragraph and fails when they disagree, because the last
+time they disagreed nothing noticed (D072).
 
 **Refused deletes are audited too**, as `NoteDiscarded` with `AuditOutcome.Failure` and a
 fixed-vocabulary reason: `not-found`, `amendment`, `has-content`, `signed`. A log holding only

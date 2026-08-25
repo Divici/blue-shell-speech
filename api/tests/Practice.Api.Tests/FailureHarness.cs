@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -392,20 +393,27 @@ internal sealed class MarksTransactionBoundaries(CommandsPerTransaction tally)
 }
 
 /// <summary>
-/// Makes every statement against ONE table hang, on whatever token EF handed the command.
+/// Makes every statement whose text contains a FRAGMENT hang, on whatever token EF handed
+/// the command.
 ///
 /// The token is the point. DelaysEveryRead below stalls everything and therefore only ever
-/// demonstrates the cancellable half; this one is aimed at a table whose writes
-/// deliberately run on a token of their own, so the stall is only cut short by the bound
-/// that is actually under test. Pointed at AuditEvents it reproduces the exact shape of
-/// the finding: the reads before it complete normally, the request bound fires, and the
-/// uncancellable INSERT is still going.
+/// demonstrates the cancellable half; this one is aimed at statements that deliberately run
+/// on a token of their own, so the stall is only cut short by the bound that is actually
+/// under test.
+///
+/// A FRAGMENT RATHER THAN A TABLE NAME, because the two halves of an authentication attempt
+/// hit the SAME table and have to be stalled by different amounts. `FROM [AspNetUsers]` is
+/// the lookup that decides the outcome; `UPDATE [AspNetUsers]` is the failure-count write
+/// that runs afterwards. Stalling the table would stall both equally and could not
+/// reproduce a login whose bookkeeping outlives the grace while its lookup does not — which
+/// is the whole of WORK_QUEUE 1.17 F1. <see cref="StallsEveryStatementAgainst"/> is the
+/// table-shaped special case, kept because two tests name it.
 ///
 /// The stall stands in for a command that consumes its whole timeout. A real one cannot be
 /// produced on demand — a wedged database is not something a test can arrange — and what
 /// is under test is what bounds the wait, not what caused it.
 /// </summary>
-internal sealed class StallsEveryStatementAgainst(string table, TimeSpan stall)
+internal class StallsEveryStatementMatching(string fragment, TimeSpan stall)
     : DbCommandInterceptor
 {
     public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
@@ -439,10 +447,20 @@ internal sealed class StallsEveryStatementAgainst(string table, TimeSpan stall)
     }
 
     private Task StallIfItTouchesTheTableAsync(DbCommand command, CancellationToken ct) =>
-        command.CommandText.Contains($"[{table}]", StringComparison.Ordinal)
+        command.CommandText.Contains(fragment, StringComparison.Ordinal)
             ? Task.Delay(stall, ct)
             : Task.CompletedTask;
 }
+
+/// <summary>
+/// Every statement touching ONE table, whatever it does to it.
+///
+/// Pointed at AuditEvents it reproduces the exact shape of the 1.16 F2 finding: the reads
+/// before it complete normally, the request bound fires, and the uncancellable INSERT is
+/// still going.
+/// </summary>
+internal sealed class StallsEveryStatementAgainst(string table, TimeSpan stall)
+    : StallsEveryStatementMatching($"[{table}]", stall);
 
 /// <summary>
 /// Makes every read take longer than the caller is willing to wait.
@@ -463,6 +481,42 @@ internal sealed class DelaysEveryRead(TimeSpan delay) : DbCommandInterceptor
     {
         await Task.Delay(delay, cancellationToken);
         return result;
+    }
+}
+
+/// <summary>
+/// Reads one instance property down the WHOLE inheritance chain, public or not.
+///
+/// Two classes here need it and for the same reason: the value that decides a bound is
+/// declared protected by a framework type, so the only honest way to assert the configured
+/// value rather than restate a literal is to read it off the live object.
+/// <c>ExecutionStrategy.MaxRetryCount</c> is one; <c>UserManager&lt;T&gt;.CancellationToken</c>
+/// — the single lever binding every Identity store call — is the other.
+///
+/// <c>Type.GetProperty</c> searches the type it is asked about and its PUBLIC inheritance,
+/// which is not enough: these members are declared on a base class and the object is a
+/// derived one. Walking the chain with <c>DeclaredOnly</c> finds it either way, and throws
+/// by name if the framework removes it rather than passing quietly.
+///
+/// Shared rather than copied, for the reason at the top of this file: the second copy is
+/// the one nobody updates.
+/// </summary>
+internal static class ProtectedMember
+{
+    public static object Read(object instance, string name)
+    {
+        const BindingFlags Declared = BindingFlags.Instance
+            | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly;
+
+        for (var type = instance.GetType(); type is not null; type = type.BaseType)
+        {
+            var property = type.GetProperty(name, Declared);
+            if (property is not null) return property.GetValue(instance)!;
+        }
+
+        throw new InvalidOperationException(
+            $"{instance.GetType().Name} no longer exposes {name}. This value has to be read "
+            + "from the configured object, not restated in a test.");
     }
 }
 
