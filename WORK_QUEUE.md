@@ -275,6 +275,38 @@ return: every one is a form against an endpoint that already exists and is alrea
         a fourth. At that point it is a design question about whether a scale-to-zero
         database and a synchronous request path are compatible, not a bug.
 
+- [ ] **1.17 Fix three reviewer findings against `8022079`** — the fourth finding, the
+      240s ingress ceiling, is **Blocked — needs David**; do not attempt it here. These
+      three stand on their own regardless of what David decides about the ladder.
+      - **F1** Every database call in
+        `api/src/Practice.Infrastructure/Identity/ProviderAuthenticator.cs` goes through
+        `UserManager<PracticeUser>`, and **none of those methods has a `CancellationToken`
+        overload** — verified by reflection: `FindByEmailAsync`, `CheckPasswordAsync`,
+        `AccessFailedAsync`, `ResetAccessFailedCountAsync`, `GetTwoFactorEnabledAsync`,
+        `VerifyTwoFactorTokenAsync`, `UpdateAsync`. So the login path observes neither
+        `RequestAborted` nor `deadline.Token`. `POST /auth/login` with a wrong password,
+        phone locks at t=0.2s → grace starts → `AccessFailedAsync` carries a resume for
+        >90s → the deadline is already expired when
+        `audit.WriteAsync(LoginFailed, reason=bad-password)` runs, so it throws instantly
+        and **the row is lost** where `CancellationToken.None` would have landed it. The
+        enumeration failure D090 claims to have closed "by construction".
+      - **F3** `docs/SECURITY.md` lines 177–178 still assert "**No audit write is
+        cancellable.** `IAuditWriter.WriteAsync` takes no `CancellationToken`, and
+        `AuditWriter` saves on `CancellationToken.None`." `AuditWriter` now saves on
+        `deadline.Token`. The document a compliance reviewer reads denies the durability gap
+        D090 knowingly accepted, and D012's append-only framing rests on it. Sibling stale
+        comment at `InfrastructureServices.cs:52`.
+      - **F4** `DatabaseTimeouts.cs` says `Request + UncancellableGrace` is "the whole of
+        what this tier will spend", while its own class docstring says `BEGIN TRANSACTION`
+        and `COMMIT` are round trips with **no command timeout and no bound**;
+        `AtomicWrites` commits on `CancellationToken.None`. `IConsultationNotifier.NotifyAsync`
+        is the same shape and is not on the deadline — harmless only while the notifier
+        writes a log line, so **the ceiling stops holding the day the real mail transport
+        lands**, which is already queued under Blocked.
+      - Also worth carrying: a scoped deadline resolved OUTSIDE a request scope does not
+        throw — a long-lived scope (a retention job draining `AudioDeleted`) silently gets
+        an already-expired token. Relevant to task **2.10**.
+
 ## Phase 2 — Slice 6, dictation
 
 - [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
@@ -367,6 +399,28 @@ deployment is `GlobalStandard`, and §22 forbids real data regardless.
 
 Do not attempt these. Recorded so nothing is silently dropped.
 
+- **DECIDE: the request-timeout ladder is unreachable, because Container Apps ingress cuts
+  every request at 240s.** `infra/provision-platform.sh:65` creates a **Consumption-only**
+  environment; that limit is fixed and not raisable without premium ingress on a
+  workload-profiles environment, and it applies to both the external hop to `web` and the
+  internal hop to `api`. Every number tasks 1.14–1.16 negotiated sits above it — `Request`
+  620s, `Ceiling` 710s, `API_TIMEOUT_MS` 750s — and the measured retry budget alone is
+  ~590s. **The platform decides first, so no BFF constant can fix this.** A consultation
+  POST during an auto-pause resume takes a 504 from ingress at 240s,
+  `web/lib/api/consultations.ts:118` reads `!response.ok` → `{ stored: false }`, and a
+  parent is told their enquiry was not stored while the API commits the row — the exact
+  defect D086 claims to have closed.
+  Options, with costs:
+  1. **Shrink the budget under 240s** — reduce `CommandSeconds` (30s, named in D090 as the
+     smallest lever) and/or `MaxRetryCount`. Free. Cost: a genuine resume that outruns the
+     budget now fails honestly where it previously succeeded.
+  2. **Move these paths to background job + polling.** CLAUDE.md **already mandates this for
+     dictation** — "never a synchronous request that must survive a scale-to-zero cold
+     start." Free and consistent with a decision already made. Cost: real work, plus a UI
+     that shows pending state.
+  3. Premium ingress on a workload-profiles environment. Costs money, leaves consumption.
+  4. Disable Azure SQL auto-pause. Exits the free offer.
+  **Recommendation: 1 + 2.** 3 and 4 convert a design problem into a monthly bill.
 - Buy the practice domain → unblocks the CDN (blocker #6) and a real contact address.
 - Upgrade Azure to Pay-As-You-Go under the practice identity → unblocks blockers #1, #4, #5.
 - Request `DataZoneStandard` quota → unblocks a PHI-safe model deployment.
