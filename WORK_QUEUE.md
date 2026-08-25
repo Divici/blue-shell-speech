@@ -118,6 +118,40 @@ return: every one is a form against an endpoint that already exists and is alrea
         never sends, so the suite cannot see it. Fix the serialisation at the source and
         make at least one test consume a real endpoint payload.
 
+- [ ] **1.12 Fix the five reviewer findings against `a4d6ff5`** — run before 1.5. **F2
+      must land before any second transaction is written anywhere in the API**, because
+      D071 names that block as the pattern to copy.
+      - **Fix the CLASS, not the reported instance.** Four rounds running, a fix has closed
+        the named case and left an identical sibling open. Enumerate every call site of the
+        pattern before claiming a finding closed.
+      - **F1** `AuditRefusedDiscardAsync` passes the endpoint's `ct`
+        (`HttpContext.RequestAborted`) into `SaveChangesAsync`, so a client that sends
+        `DELETE /notes/{guid}` and drops the connection leaves nothing behind. Walk 10,000
+        ids that way and `AuditEvents` is empty. This is the survivorship bias D071 fixed on
+        the success path, left on all four refusal paths — including the `not-found` one
+        that `docs/SECURITY.md`, amended in the same commit, calls "the only place the
+        attempt is recorded at all."
+      - **F2** The retried transaction body is not idempotent. `AuditEvent.Record(...)` is
+        constructed INSIDE the `strategy.ExecuteAsync` lambda; a transient failure of the
+        audit save leaves it `Added` (a failed save never calls `AcceptAllChanges`), the
+        transaction rolls back, the lambda re-runs, and the next save inserts BOTH. Two
+        `Success` discard rows for one deletion, in a table the app principal cannot UPDATE
+        or DELETE. The retry also re-`Remove`s an entity EF has already detached.
+      - **F3** `SupersedesNoteId` is checked before `CanBeDiscarded`, so every signed note
+        from v2 on audits as `refused;reason=amendment` rather than `signed`. A query for
+        "attempts to delete a signed clinical record" undercuts by exactly the set of
+        amended — i.e. contested — records. The clinician copy is wrong in the same case: a
+        superseded v1 is told "amend it instead," which `Amend()` then refuses.
+      - **F4** `Program.cs:27` claims the exception message and the caller's `traceId` "are
+        joined by Serilog." `git grep -in serilog -- api/` returns only that comment — no
+        package, no sink, no `IncludeScopes`. Michelle gets a trace id nothing can look up.
+        Either wire it or delete the claim; note 4.1 already owns the Serilog work.
+      - **F5** A `Control:` line in `NoteEditor.test.tsx` is a paraphrase naming a clause
+        (`!note.isAmendment`) that does not exist; the real line is
+        `if (note.isAmendment) return false;` and it produces a different message. D070's
+        whole argument is that the line cannot be written without running the deletion.
+        **Audit every `Control:` line added in `a4d6ff5` the same way**, not just this one.
+
 ## Phase 2 — Slice 6, dictation
 
 - [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.

@@ -91,6 +91,23 @@ Report back in under 200 words: what you built, the commit sha, test counts, and
 you could not do. Do not paste code.
 ```
 
+## Fix-round brief — the addition that matters
+
+When dispatching a builder to fix reviewer findings, the brief MUST say:
+
+> Fix the **class**, not the reported instance. Before claiming a finding closed, enumerate
+> every call site of the same pattern and fix all of them. Say in your report how many you
+> found and where.
+
+This is not hypothetical. Four consecutive fix rounds closed the named case and left an
+identical sibling open: note reads were audited while refused-delete reads were not; the
+success-path audit token was fixed while four refusal paths kept the request token; the
+commit that coined "a comment must not claim more than its control" shipped a comment
+claiming a Serilog correlation that did not exist; and the commit that invented the
+`Control:` protocol shipped a `Control:` line naming a symbol that does not exist.
+
+A builder given a list of findings fixes the list. It has to be told the list is a sample.
+
 ## Reviewer brief
 
 ```
