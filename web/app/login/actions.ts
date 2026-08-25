@@ -1,14 +1,14 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { authApi } from "@/lib/auth/api-client";
+import { authApi, ApiRateLimitedError } from "@/lib/auth/api-client";
 import {
   createPendingMfa,
   createSession,
   destroySession,
   getPendingMfa,
 } from "@/lib/auth/session";
-import type { LoginState, MfaState } from "./state";
+import { RATE_LIMITED_MESSAGE, type LoginState, type MfaState } from "./state";
 
 /**
  * Step one: email and password.
@@ -30,7 +30,26 @@ export async function signIn(
   let result;
   try {
     result = await authApi.verifyPassword(email, password);
-  } catch {
+  } catch (error) {
+    /*
+     * A refusal by the rate limiter is the one failure that gets its own message.
+     *
+     * Every other one is collapsed below, deliberately. This one is not in that set: the
+     * caller already knows they have been sending a lot of requests, because they sent
+     * them, so saying "wait" discloses nothing they did not cause — and "that email or
+     * password was not recognised" would be an actively wrong thing to tell somebody whose
+     * credential was never even looked at.
+     *
+     * NO NUMBER IN IT. The API sends no `Retry-After` on this path on purpose (D098), so
+     * there is nothing to render and nothing an attacker can pace against.
+     */
+    if (error instanceof ApiRateLimitedError) {
+      return {
+        status: "error",
+        message: RATE_LIMITED_MESSAGE,
+      };
+    }
+
     /*
      * An API failure and a rejected credential look identical to the visitor.
      *
@@ -103,7 +122,14 @@ export async function verifyMfa(
     result = useRecovery
       ? await authApi.redeemRecoveryCode(pending.userId, code)
       : await authApi.verifyMfa(pending.userId, code);
-  } catch {
+  } catch (error) {
+    // The same branch as step one, for the same reason. `/auth/mfa/verify` and
+    // `/auth/mfa/recovery` are both rate limited, so a fix that only covered `signIn`
+    // would leave the sibling telling somebody their valid code "was not valid".
+    if (error instanceof ApiRateLimitedError) {
+      return { status: "error", message: RATE_LIMITED_MESSAGE };
+    }
+
     return { status: "error", message: "We could not verify that code. Please try again." };
   }
 
@@ -143,7 +169,13 @@ export async function completeEnrolment(
   let result;
   try {
     result = await authApi.completeEnrolment(pending.userId, code);
-  } catch {
+  } catch (error) {
+    // Third of three. Enrolment confirmation verifies a TOTP as well, so it reaches the
+    // same limit — and it is the one credential check the lockout does not count at all.
+    if (error instanceof ApiRateLimitedError) {
+      return { status: "error", message: RATE_LIMITED_MESSAGE };
+    }
+
     return { status: "error", message: "We could not confirm that code. Please try again." };
   }
 

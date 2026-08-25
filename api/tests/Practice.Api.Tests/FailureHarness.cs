@@ -1,3 +1,6 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http.Features;
 using System.Reflection;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
@@ -665,5 +668,84 @@ internal static class FailureHarness
                     sql.CommandTimeout(DatabaseTimeouts.CommandSeconds);
                 })
                 .AddInterceptors(interceptors));
+        };
+}
+
+/// <summary>
+/// A request lifetime a test can cancel on demand.
+///
+/// Deliberately NOT TestServer's own <c>HttpContext.Abort()</c>, which also tears the
+/// response down: that would exercise the harness's disconnect handling alongside the
+/// property under test, and a failure could not be attributed to either. This cancels the
+/// token the pipeline is holding and changes nothing else — the client dropping the
+/// connection, with the timing removed.
+///
+/// SHARED RATHER THAN COPIED, for the reason at the top of this file. It lived privately
+/// inside NoteImmutabilityTests until the rate limiter needed the same shape: a control that
+/// only shows itself once the caller has gone.
+/// </summary>
+internal sealed class DroppableConnection : IHttpRequestLifetimeFeature, IDisposable
+{
+    private readonly CancellationTokenSource _aborted = new();
+
+    public CancellationToken RequestAborted
+    {
+        get => _aborted.Token;
+        set { }
+    }
+
+    public void Abort() => _aborted.Cancel();
+
+    public void Dispose() => _aborted.Dispose();
+}
+
+/// <summary>Installs a <see cref="DroppableConnection"/> the test can abort later.</summary>
+internal sealed class DroppableConnectionFilter : IStartupFilter
+{
+    public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+        app =>
+        {
+            app.Use(async (context, continuation) =>
+            {
+                using var connection = new DroppableConnection();
+                context.Features.Set<IHttpRequestLifetimeFeature>(connection);
+
+                await continuation(context);
+            });
+
+            next(app);
+        };
+}
+
+/// <summary>
+/// A caller who is already gone before the endpoint is reached.
+///
+/// FIRST IN THE PIPELINE, ahead of the exception handler and the request-timeout
+/// middleware, so everything downstream runs on a token that is ALREADY cancelled — which
+/// is the state a request is in when the socket dropped while its body was still being
+/// read, and the state an attacker puts every request in deliberately if doing so makes a
+/// counter stop counting.
+///
+/// It is the harshest honest version of the disconnect: a write that observes the request's
+/// token has no window at all, so a control that survives this is a control that does not
+/// depend on the caller staying attached. <see cref="UncancellableWriteDeadline"/> is bound
+/// to the same cancelled token by ProviderContextMiddleware and starts its grace
+/// immediately, which is precisely the mechanism under test.
+/// </summary>
+internal sealed class AbortedBeforeTheEndpointFilter : IStartupFilter
+{
+    public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+        app =>
+        {
+            app.Use(async (context, continuation) =>
+            {
+                using var connection = new DroppableConnection();
+                context.Features.Set<IHttpRequestLifetimeFeature>(connection);
+                connection.Abort();
+
+                await continuation(context);
+            });
+
+            next(app);
         };
 }

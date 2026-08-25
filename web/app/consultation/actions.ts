@@ -1,13 +1,13 @@
 "use server";
 
-import { headers } from "next/headers";
 import type { ConsultationState } from "./state";
 import {
   validateConsultation,
   isLikelyBot,
   type ConsultationInput,
 } from "@/lib/consultation-schema";
-import { RateLimiter, hashClientId, clientIdentifier } from "@/lib/rate-limit";
+import { RateLimiter } from "@/lib/rate-limit";
+import { clientKey } from "@/lib/client-key";
 import { consultationsApi } from "@/lib/api/consultations";
 import { practiceContact } from "@/lib/practice-contact";
 
@@ -20,25 +20,16 @@ import { practiceContact } from "@/lib/practice-contact";
  */
 const limiter = new RateLimiter({ limit: 5, windowMs: 10 * 60_000 });
 
-/**
- * Identifies the caller, hashed — ONE value, used twice.
+/*
+ * `clientKey()` used to be declared here.
  *
- * It keys the rate limiter, and it is the `SourceIpHash` stored on the row
- * (docs/DATA_MODEL.md). Deliberately the same derivation for both: a second hashing scheme
- * would produce a column that correlates with nothing the limiter ever counted, and
- * "did these twelve enquiries come from one place" is the only question either of them
- * exists to answer.
- *
- * `clientIdentifier` takes the entry the PROXY appended rather than the first one in the
- * header — see `lib/rate-limit.ts` for why the leading entry is the caller's to choose,
- * and what reading it cost. It falls back to a shared constant when there is no address
- * at all, which over-throttles rather than silently disabling the limit.
+ * It moved to `lib/client-key.ts` when the API's login rate limiter needed the same value:
+ * the browser never reaches `api`, so the caller's real address is observable only at this
+ * tier and has to be derived here and forwarded (`lib/auth/api-client.ts`). One derivation,
+ * three uses — this limiter, `ConsultationRequest.SourceIpHash`, and the API's partition
+ * key. A second one would produce values that correlate with nothing either of the others
+ * ever recorded, which is D080's argument for why there is only ever one.
  */
-async function clientKey(): Promise<string> {
-  const headerList = await headers();
-  return hashClientId(clientIdentifier(headerList.get("x-forwarded-for")));
-}
-
 
 /**
  * Handles a consultation request.

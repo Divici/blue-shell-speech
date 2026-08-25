@@ -82,4 +82,28 @@ public enum AuditEventType
     /// in this system is a sequential integer (CLAUDE.md conventions).
     /// </summary>
     ConsultationRequestUpdated = 83,
+
+    /// <summary>
+    /// A request was refused by the rate limiter before the work it asked for was done.
+    ///
+    /// ITS OWN EVENT RATHER THAN A Denied OUTCOME ON LoginFailed, and numbered here rather
+    /// than beside the login rows because it is cross-cutting: the same event covers every
+    /// limited path, and `policy=` says which. A refused request is not a failed credential
+    /// attempt — nothing was checked, no password was hashed, and no account was involved —
+    /// so recording it as one would inflate "failed logins" by exactly the set of requests
+    /// that never reached a login. That count is read once, years later, by somebody who was
+    /// not here, and it has to mean one thing (the argument D076 makes about growing this
+    /// vocabulary at all, and the one ConsultationRequestViewed makes about not reusing
+    /// PatientViewed).
+    ///
+    /// The metadata says which DIMENSION tripped — a flood from one place, or a flood at one
+    /// submitted address. It carries no address and no submitted identity: a table of the
+    /// addresses somebody guessed is the enumeration list this control exists to deny, in
+    /// the one table this application never deletes from (docs/SECURITY.md §Audit).
+    ///
+    /// WRITTEN ONCE PER PARTITION PER WINDOW, not once per refused request. A row per
+    /// request would make the audit table the amplification target the limiter exists to
+    /// close — see IRateLimitStore for what that buys and what it costs.
+    /// </summary>
+    RateLimited = 90,
 }

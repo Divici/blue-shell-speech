@@ -31,7 +31,7 @@ ASP.NET Core Identity, self-hosted. No external IdP.
 | **MFA** | **TOTP, mandatory, not optional.** Single account holding all PHI |
 | Recovery codes | Generated once at enrolment, hashed at rest, single-use. Treated as credentials. **Regeneration after enrolment is not built** — there is no endpoint for it; the ten issued at enrolment are all there are |
 | Lockout | Fixed **15 minutes** after 5 failures (`IdentityOptions.DefaultLockoutTimeSpan`), not exponential. The count is a **single UPDATE the database serialises** (`ILoginBookkeeping`), not Identity's read-modify-write — see below. `LoginFailed` is audited with the reason and the actor; **it does not carry an IP** — `AuditEvent.IpAddress` is filled on patient reads only |
-| Rate limiting on login | **Planned — WORK_QUEUE 1.19**, pulled forward from 4.3 because 1.18 measured it as an open hole rather than a scheduled one. Nothing in `api` limits attempts by source or by account; `web/lib/rate-limit.ts` serves the public consultation form only. The lockout above is the whole of the throttle today, and it does not touch attempts against addresses that have no account |
+| Rate limiting on login | Built (WORK_QUEUE 1.19). Every route under `/auth` is limited **by source, 20 per 5 minutes**, and the credential-checking ones **by submitted identity, 10 per 15 minutes** — the address that was TYPED, hashed, so an address with no account is counted exactly like one that has one. Counters live in **`RateLimitCounters`** in the same Azure SQL database, incremented by one serialised `UPDATE`, so the limit holds across replicas and across a scale-to-zero cycle. A refusal is `429` with an **empty body and no `Retry-After`** — identical for both dimensions and for both branches — and never reaches the password hasher, the account lookup or the credential path's audit write. See D098 |
 | Session | `HttpOnly`, `Secure` in production, `SameSite=Lax`, sliding 30 min, absolute 12 h (`web/lib/auth/session.ts`) |
 | Re-auth | **Planned.** `PracticeUser.LastMfaAtUtc` is recorded on every completed sign-in so the timestamp exists, but no endpoint changes a password, regenerates recovery codes, or disables MFA, so there is nothing yet to gate. When one lands, it is gated on that timestamp |
 
@@ -44,6 +44,30 @@ Measured: **four waves of twenty simultaneous wrong passwords — eighty attempt
 caller bought N guesses per counted failure. It is now one statement against the row, and
 `ProviderAuthenticator` refuses to answer at all if that statement changes nothing:
 a refusal that is not counted is a guess that cost the attacker nothing.
+
+**The limiter is in front of the lockout because the lockout cannot see an unknown address.**
+`AccessFailedCount` lives on a row, so guesses at addresses nobody has registered increment
+nothing — and every one of them still woke a container that scales from zero, ran a PBKDF2
+hash and inserted an audit row before being told "invalid". The limiter partitions on what was
+SUBMITTED rather than on what was found, which is what gives that branch a bucket at all, and
+gives it the same bucket shape as a real account so the 429 does not become the enumeration
+oracle that a per-account limit alone would be.
+
+**What it does not do**, stated because a limiter is easy to oversell. A caller with a wide
+enough set of forwarded sources AND a wide enough address list is bounded by the product of the
+two limits rather than by either, which is the ceiling of any counting limiter; MFA, the
+lockout and the audit trail all remain load-bearing. The source key is derived by `web` and
+forwarded on a header, so anything that can reach `api` inside the Container Apps environment
+can choose its own source bucket until **WORK_QUEUE 4.4** verifies the caller — it cannot
+choose its account bucket, which is the second reason both dimensions exist. Refusals are
+audited as `RateLimited`, **once per partition per window** rather than once per request, so a
+burst that fits inside one window and loses its single row leaves nothing; a sustained one
+writes another row next window. The row carries the hashed source and deliberately **no
+address**: a list of what somebody guessed is the enumeration list this control exists to deny.
+
+**The consultation form is still limited in `web` only**, in process memory
+(`web/lib/rate-limit.ts`, whose own docstring states the multi-replica limit). Moving it onto
+the shared store is what remains of **WORK_QUEUE 4.3**.
 
 **MFA cannot be disabled by any path this application exposes, because no such path exists.**
 The account recovery path is the weakest link in any MFA deployment — an attacker who can reset
@@ -257,7 +281,8 @@ Append-only `AuditEvent`. Application principal has **no `UPDATE` or `DELETE`** 
 **Emitted today:** `LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `MfaEnrolled`,
 `RecoveryCodeUsed`, `PatientViewed`, `PatientCreated`, `PatientUpdated`, `NoteSigned`,
 `NoteAmended`, `NoteDiscarded`, `ConsultationRequestReceived`,
-`ConsultationNotificationFailed`, `ConsultationRequestViewed`, `ConsultationRequestUpdated`.
+`ConsultationNotificationFailed`, `ConsultationRequestViewed`, `ConsultationRequestUpdated`,
+`RateLimited`.
 
 **Declared in `AuditEventType` and not yet written by anything:** `LoggedOut`, `AudioDeleted`
 (**planned — WORK_QUEUE 2.10**), `ExportGenerated`. The enum values exist so that historical

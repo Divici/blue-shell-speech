@@ -1715,46 +1715,14 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
      * CancellationToken, so there is no token left for a caller to hand it.
      */
 
-    /// <summary>
-    /// A request lifetime whose RequestAborted this test can cancel on demand.
-    ///
-    /// Deliberately NOT TestServer's own feature via HttpContext.Abort(), which also tears
-    /// the response down: that would exercise the harness's disconnect handling alongside
-    /// the property under test, and a failure could not be attributed to either. This
-    /// cancels the token the endpoint is holding and changes nothing else — the client
-    /// dropping the connection, with the timing removed.
-    /// </summary>
-    private sealed class DroppableConnection : IHttpRequestLifetimeFeature, IDisposable
-    {
-        private readonly CancellationTokenSource _aborted = new();
-
-        public CancellationToken RequestAborted
-        {
-            get => _aborted.Token;
-            set { }
-        }
-
-        public void Abort() => _aborted.Cancel();
-
-        public void Dispose() => _aborted.Dispose();
-    }
-
-    private sealed class DroppableConnectionFilter : IStartupFilter
-    {
-        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
-            app =>
-            {
-                app.Use(async (context, continuation) =>
-                {
-                    using var connection = new DroppableConnection();
-                    context.Features.Set<IHttpRequestLifetimeFeature>(connection);
-
-                    await continuation(context);
-                });
-
-                next(app);
-            };
-    }
+    /*
+     * DroppableConnection and DroppableConnectionFilter used to live here, privately.
+     *
+     * They moved to FailureHarness.cs when the rate limiter needed the same shape — a
+     * control that only shows itself once the caller has gone — for the reason that file's
+     * header gives: two copies of a harness drift, and the sibling nobody updated is this
+     * repository's most repeated defect. Nothing else about this test changed.
+     */
 
     /// <summary>
     /// Drops the connection at the moment an audit row is about to be written, then hands

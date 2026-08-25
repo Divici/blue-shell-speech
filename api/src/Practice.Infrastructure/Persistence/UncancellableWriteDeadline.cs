@@ -4,7 +4,15 @@ namespace Practice.Infrastructure.Persistence;
 
 /// <summary>
 /// The bound on work this application deliberately refuses to abandon when the caller goes
-/// away — audit writes, today, and nothing else.
+/// away.
+///
+/// FOUR CONSUMERS NOW, AND THIS LINE HAS BEEN WRONG ABOUT THAT ONCE ALREADY — it said "audit
+/// writes, today, and nothing else" for two commits after Identity's store calls joined them.
+/// They are: <c>IAuditWriter</c>, Identity's token-less store calls (via
+/// <c>PracticeUserManager</c>), <c>ILoginBookkeeping</c>'s failure count, and
+/// <c>IRateLimitStore</c>'s counter. Every one of them records something that has ALREADY
+/// happened, which is the whole membership test — the caller going away does not un-happen a
+/// read, a refusal, a wrong password, or a request that arrived.
 ///
 /// WHY THIS TYPE EXISTS. RequestTimeoutsMiddleware does not stop a request. It cancels
 /// HttpContext.RequestAborted and then AWAITS the rest of the pipeline, so a request bound

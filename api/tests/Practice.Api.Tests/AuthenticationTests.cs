@@ -1,3 +1,5 @@
+using Practice.Api.RateLimiting;
+using Practice.Infrastructure.RateLimiting;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
@@ -30,11 +32,35 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
     private PracticeApiFactory _factory = null!;
     private HttpClient _client = null!;
 
+    /// <summary>
+    /// This test's own source, for the rate limiter's source partition.
+    ///
+    /// xunit builds a fresh instance of this class per test, so every test gets its own —
+    /// which is what stops the class measuring its own leftovers. The suite shares one
+    /// database and the limiter's counters are in it, so without this every request from
+    /// every test in this file would fall into the ONE shared "unattributed" bucket and the
+    /// tests that happened to run last would be answered 429 instead of the behaviour they
+    /// assert. That is D068's finding in the E2E suite, one tier along, and it is not a way
+    /// of switching the limiter off: behind ingress, different callers genuinely do arrive
+    /// with different forwarded keys.
+    /// </summary>
+    private readonly string _source =
+        Convert.ToHexStringLower(Guid.NewGuid().ToByteArray())
+        + Convert.ToHexStringLower(Guid.NewGuid().ToByteArray());
+
     public Task InitializeAsync()
     {
         _factory = new PracticeApiFactory(sql.ConnectionString);
-        _client = _factory.CreateClient();
+        _client = ClientFor(_factory);
         return Task.CompletedTask;
+    }
+
+    /// <summary>A client that carries this test's source key, like `web` would.</summary>
+    private HttpClient ClientFor(PracticeApiFactory factory)
+    {
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(ClientKey.HeaderName, _source);
+        return client;
     }
 
     public Task DisposeAsync()
@@ -440,7 +466,7 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
             new StallsEveryStatementMatching("FROM [AspNetUsers]", TimeSpan.FromMilliseconds(1500)),
             new StallsEveryStatementMatching("UPDATE [AspNetUsers]", TimeSpan.FromSeconds(20)));
 
-        using var client = stalled.CreateClient();
+        using var client = ClientFor(stalled);
 
         // Warm the host and the pool, so the bound below fires inside the lookup rather
         // than inside everything a first request drags in with it.
@@ -507,7 +533,7 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
             grace,
             new StallsEveryStatementMatching("UPDATE [AspNetUsers]", wedged));
 
-        using var client = stalled.CreateClient();
+        using var client = ClientFor(stalled);
         (await client.GetAsync("/health/live")).Dispose();
 
         var started = Stopwatch.GetTimestamp();
@@ -586,7 +612,7 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
         using var stalled = StalledFactory(
             requestBound, grace, new StallsEveryStatementAgainst("AspNetUsers", stall));
 
-        using var client = stalled.CreateClient();
+        using var client = ClientFor(stalled);
 
         /*
          * Warmed twice, and both warm-ups are unknown emails.
@@ -684,7 +710,7 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
         using var contended = ContendedFactory(
             new DelaysEveryRead(TimeSpan.FromMilliseconds(250)));
 
-        using var client = contended.CreateClient();
+        using var client = ClientFor(contended);
         (await client.GetAsync("/health/live")).Dispose();
 
         await Task.WhenAll(Enumerable.Range(0, 20).Select(_ =>
@@ -743,7 +769,7 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
             sql.ConnectionString,
             services => services.AddScoped<ILoginBookkeeping, CountsNothing>());
 
-        using var client = uncountable.CreateClient();
+        using var client = ClientFor(uncountable);
 
         using var response = await client.PostAsJsonAsync(
             "/auth/password", new PasswordRequest(email, "wrong-password-here"));
@@ -881,7 +907,7 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
             new StallsEveryStatementMatching(
                 "UPDATE [AspNetUsers]", TimeSpan.FromSeconds(20)));
 
-        using var client = stalled.CreateClient();
+        using var client = ClientFor(stalled);
         (await client.GetAsync("/health/live")).Dispose();
 
         using var verify = await client.PostAsJsonAsync(
@@ -943,9 +969,27 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
     /// Unlike <see cref="StalledFactory"/> the request timeout and the deadline are left
     /// exactly as production sets them. What the caller of this wants is a RACE, and
     /// scaling the bounds down would cut the race short rather than widen it.
+    ///
+    /// THE RATE LIMITER IS RAISED OUT OF THE WAY, AND THAT IS DELIBERATE RATHER THAN
+    /// CONVENIENT. The only test using this sends twenty simultaneous wrong passwords at one
+    /// address to prove the LOCKOUT counts them — a different control, in front of which
+    /// production's limiter would refuse the eleventh and leave the lockout untested while
+    /// the suite stayed green. Two controls in series can only be measured one at a time, so
+    /// the limiter has its own file (<see cref="RateLimitTests"/>) and this leaves it wide.
+    /// Note what is NOT raised: the lockout threshold, the request bound and the grace are
+    /// all production's.
     /// </summary>
     private PracticeApiFactory ContendedFactory(params IInterceptor[] interceptors) =>
-        new(sql.ConnectionString, FailureHarness.With(sql.ConnectionString, interceptors));
+        new(sql.ConnectionString, services =>
+        {
+            FailureHarness.With(sql.ConnectionString, interceptors)(services);
+
+            services.AddSingleton(new RateLimitPolicies
+            {
+                LoginPerSource = new("login-source", 10_000, TimeSpan.FromMinutes(5), false),
+                LoginPerAccount = new("login-account", 10_000, TimeSpan.FromMinutes(15), false),
+            });
+        });
 
     // ---------------------------------------------------------------- helpers
 

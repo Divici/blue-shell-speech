@@ -97,36 +97,54 @@ public sealed class SecurityDocumentTests
     }
 
     /// <summary>
-    /// Both documents say login rate limiting is planned for exactly as long as it is absent.
+    /// Both documents describe login rate limiting the way the code leaves it — and the
+    /// marker is the SHARED STORE, not the word "limiter".
     ///
-    /// WHY THIS ONE IS PINNED AND THE OTHER PLANNED CONTROLS ARE NOT. The five-failure lockout
-    /// counts concurrent attempts now, but it only ever counts attempts against an address that
-    /// HAS an account — an unknown email increments nothing, by construction, because there is
-    /// no row to increment. So an unbounded stream of guesses against random addresses is
-    /// limited by nothing in this tier, and each one wakes a container that scales from zero
-    /// and inserts an audit row. That is a hole with an owner (WORK_QUEUE 1.19) and no code, and
-    /// the failure mode this test exists to prevent is not the hole — it is the hole becoming
-    /// invisible because a document sweep tidied the sentence away.
+    /// WHY THIS ONE IS PINNED AND THE OTHER PLANNED CONTROLS ARE NOT. It began as a pin on a
+    /// gap: the five-failure lockout only ever counts attempts against an address that HAS an
+    /// account, so a stream of guesses at random addresses was limited by nothing at all, and
+    /// the failure mode being guarded was the gap becoming invisible because a document sweep
+    /// tidied the sentence away. WORK_QUEUE 1.19 built the limiter, so the pin now guards the
+    /// other direction — and the direction it guards has to be the one that could go wrong.
     ///
-    /// It fails in both directions on purpose. Delete the sentence while `api` still has no
-    /// limiter and it goes red; add `AddRateLimiter` and leave the sentence saying "planned"
-    /// and it goes red too, which is the same two-tree shape as the BFF timeout guard.
+    /// SO THE MARKER MOVED, FROM <c>AddRateLimiter</c> TO <c>RateLimitCounters</c>. The first
+    /// was a guess at an implementation and this one is not: an in-process limiter would
+    /// satisfy "a limiter exists" while being exactly the control 1.18 refused to ship — one
+    /// replica's worth of counting on a container app that scales horizontally and to zero.
+    /// The table name is what distinguishes the thing that was built from the thing that was
+    /// rejected, so it is what both documents have to be able to say and what the tree has to
+    /// contain.
+    ///
+    /// IT STILL FAILS IN BOTH DIRECTIONS. Drop the store and leave the documents claiming it
+    /// → red. Rewrite the rows without it, or let them drift back to "planned", while the
+    /// store is there → red. Same two-tree shape as the BFF timeout guard.
     ///
     /// Control: the "Rate limiting on login" row in docs/SECURITY.md §Authentication and the
     /// boundary ① S row in docs/THREAT_MODEL.md.
-    /// <c>**Planned — WORK_QUEUE 1.19**</c> in SECURITY.md rewritten to <c>**Not built.**</c>
-    /// — a tidy-up that loses the task number and reads as an accepted gap → red,
-    /// "docs/SECURITY.md no longer says login rate limiting is planned (WORK_QUEUE 1.19), and
-    /// nothing under api/src registers a limiter." The falsification is deliberately the
-    /// plausible one: nobody removes a whole row, they smooth a sentence.
+    /// The word <c>RateLimitCounters</c> removed from the SECURITY.md row, leaving the row
+    /// otherwise intact and still describing a limiter — the plausible tidy-up, since nobody
+    /// deletes a whole row — → red, "docs/SECURITY.md describes login rate limiting without
+    /// naming the shared store, and api/src has one (RateLimitCounters)."
+    ///
+    /// Control: the same, in the other direction — the phrase <c>planned — 1.19</c> restored
+    /// to the THREAT_MODEL.md row while the code has a limiter → red, "docs/THREAT_MODEL.md
+    /// still calls login rate limiting planned (1.19 / 4.3), and api registers one."
     /// </summary>
     [Fact]
     public void Both_documents_describe_login_rate_limiting_as_the_code_leaves_it()
     {
-        var limiter = Directory
+        /*
+         * THE SHARED STORE, BY NAME.
+         *
+         * "Is there a limiter" is the question this used to ask and it is the wrong one: an
+         * in-process fixed window answers yes and limits one replica. The counter table is
+         * the difference between the control that was built and the one WORK_QUEUE 1.18
+         * declined to ship, so it is what the documents are held to.
+         */
+        var store = Directory
             .EnumerateFiles(RepoTree.File("api/src"), "*.cs", SearchOption.AllDirectories)
             .Any(path => File.ReadAllText(path)
-                .Contains("AddRateLimiter", StringComparison.Ordinal));
+                .Contains("RateLimitCounters", StringComparison.Ordinal));
 
         var documents = new[] { "docs/SECURITY.md", "docs/THREAT_MODEL.md" };
 
@@ -134,24 +152,34 @@ public sealed class SecurityDocumentTests
         {
             var text = File.ReadAllText(RepoTree.File(relative));
 
-            // 4.3 was pulled forward to 1.19 while this was being written, so both numbers
-            // are accepted: the claim under test is that the gap is named with a task, not
-            // which slot in the queue that task currently occupies.
-            var says = Regex.IsMatch(
+            // Both task numbers are accepted: 4.3 was pulled forward to 1.19 while the pin
+            // was being written, and the claim under test was never which slot in the queue
+            // the work occupied.
+            var stillPlanned = Regex.IsMatch(
                 text, @"[Pp]lanned — (WORK_QUEUE )?(4\.3|1\.19)", RegexOptions.None, Patience);
 
+            Assert.False(
+                stillPlanned && store,
+                $"{relative} still calls login rate limiting planned (1.19 / 4.3), and api "
+                + "registers one. A document that understates a control is less dangerous "
+                + "than one that overstates it and is still wrong — the next reviewer judges "
+                + "the code against this file (CLAUDE.md).");
+
+            var describes = text.Contains("RateLimitCounters", StringComparison.Ordinal);
+
             Assert.True(
-                says != limiter,
-                limiter
-                    ? $"{relative} still calls login rate limiting planned, and api now "
-                      + "registers a rate limiter. A document that understates a control is "
-                      + "less dangerous than one that overstates it and is still wrong — the "
-                      + "next reviewer judges the code against this file (CLAUDE.md)."
-                    : $"{relative} no longer says login rate limiting is planned (WORK_QUEUE "
-                      + "1.19), and nothing under api/src registers a limiter. The lockout "
-                      + "counts attempts against accounts that EXIST; guesses against unknown "
-                      + "addresses are counted by nothing, and each one wakes a container "
-                      + "that scales from zero. Say so, with the task number, or build it.");
+                describes == store,
+                store
+                    ? $"{relative} describes login rate limiting without naming the shared "
+                      + "store, and api/src has one (RateLimitCounters). The whole reason "
+                      + "1.18 refused to ship a limiter is that an in-process one counts a "
+                      + "single replica on a container app that scales horizontally and to "
+                      + "zero — so a reader cannot tell which of the two this is from a row "
+                      + "that only says \"rate limited\"."
+                    : $"{relative} names RateLimitCounters and nothing under api/src does. "
+                      + "The store is gone, or was renamed, and the compliance documents "
+                      + "still claim a control that holds across replicas. Say what is "
+                      + "actually there, with a task number if it is planned.");
         }
     }
 

@@ -59,7 +59,7 @@ threat surface rather than a convenience feature.
 
 | | Threat | Control | State |
 |---|---|---|---|
-| **S** | Credential stuffing against `/login` | TOTP MFA; **fixed** 15-minute lockout after 5 failures — no backoff, and the count is one serialised UPDATE rather than a read-modify-write (D097); `LoginFailed` audited with reason and actor | Built. **Rate limiting per source and per account: planned — WORK_QUEUE 1.19 (pulled forward from 4.3).** Until it lands, an attempt against an address with NO account is counted by nothing at all |
+| **S** | Credential stuffing against `/login` | TOTP MFA; **fixed** 15-minute lockout after 5 failures — no backoff, and the count is one serialised UPDATE rather than a read-modify-write (D097); `LoginFailed` audited with reason and actor. **Rate limited per source (20/5 min) and per SUBMITTED address (10/15 min)**, counters in `RateLimitCounters` in Azure SQL so the limit holds across replicas and a scale-to-zero cycle; the refusal is a contentless 429 with no `Retry-After`, audited as `RateLimited` once per partition per window (D098) | Built (WORK_QUEUE 1.19). **Two limits remain honest about their reach:** a caller with many sources AND many addresses is bounded by the product of the two, and the source key is one `web` forwards — anything reaching `api` directly can pick its own until **4.4**. It cannot pick its account bucket |
 | **S** | Session cookie theft via XSS | `HttpOnly` + `Secure` + `SameSite=Lax`; React escaping; no `dangerouslySetInnerHTML` on user content | Built. **Strict CSP with no `unsafe-inline` for the authenticated app: planned — 4.2.** One policy is served for the whole origin today and it carries `unsafe-inline` |
 | **T** | CSRF on state-changing routes | Server actions carry Next.js's built-in origin/token check; `SameSite=Lax` | Built. **No POST route handler exists** — the only handler in `web/app/api` is a GET health probe — so "origin check on POST route handlers" is a rule for the first one written, not a control in place |
 | **R** | "I didn't sign that note" | `ClinicalNote.SignedBy` + `SignedAtUtc` + `ContentHash`; append-only `AuditEvent` | Built |
@@ -80,7 +80,7 @@ threat surface rather than a convenience feature.
 
 | | Threat | Control | State |
 |---|---|---|---|
-| **T/I** | SQL injection | EF Core parameterization; **no string-concatenated SQL**; raw SQL requires review. The one raw statement in `api/src` is `LoginBookkeeping`'s serialised failure count, written through `ExecuteSqlAsync` so every hole is a `DbParameter` | Built |
+| **T/I** | SQL injection | EF Core parameterization; **no string-concatenated SQL**; raw SQL requires review. There are **two** raw statements in `api/src`, and both exist because the atomicity IS the control and belongs somewhere reviewable: `LoginBookkeeping`'s serialised failure count (`ExecuteSqlAsync`) and `SqlRateLimitStore`'s counter batch (`FromSqlInterpolated`). Both interpolate through EF, so every hole is a `DbParameter` and no concatenation reaches the engine | Built |
 | **I** | Stolen connection string | Managed identity, **no SQL password exists** anywhere in the tree or in a variable | Built. **Private endpoint with public access disabled: go-live deliverable** — the dev server allows Azure services (D025), and holds no PHI |
 | **T** | Direct tampering with a signed note | `UPDATE` trigger rejects SOAP edits when `Status <> 'Draft'`; `ContentHash` detects it anyway | Built |
 | **R** | Audit log edited to hide access | App principal has **no `UPDATE`/`DELETE`** on `AuditEvent` | Built |
@@ -152,9 +152,11 @@ synthetic data only.
 4. **Michelle's account compromised.** Phishing, reused password. MFA is the whole defence, so
    **recovery-code handling is as security-critical as login itself.** MFA and the lockout are
    **built** — and the lockout only began counting concurrent attempts at D097, having been
-   defeasible by twenty simultaneous requests before it. Per-source rate limiting is
-   **planned — WORK_QUEUE 1.19**, pulled forward from 4.3, and its absence is what makes an unlimited stream of guesses against
-   *unknown* addresses free.
+   defeasible by twenty simultaneous requests before it. Rate limiting per source and per
+   submitted address is **built** (1.19, D098), on counters in `RateLimitCounters` rather than
+   in a replica's memory, which is what closed the case the lockout structurally cannot see: an
+   unlimited stream of guesses against *unknown* addresses, counted by nothing because there is
+   no row to count on.
 5. **A fabricated clinical value reaching a signed note.** Not an attacker — the system itself.
    Ranked here because impact is patient harm. Mitigations **planned — Phase 3** (3.3, 3.4, 3.7);
    nothing generates clinical text yet.

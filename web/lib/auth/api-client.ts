@@ -1,6 +1,7 @@
 import "server-only";
 
 import { apiSignal } from "@/lib/api/timeouts";
+import { clientKey, CLIENT_KEY_HEADER } from "@/lib/client-key";
 
 /**
  * Server-to-server client for the .NET API.
@@ -48,10 +49,39 @@ export interface MfaEnrolmentResult {
   recoveryCodes: string[];
 }
 
+/**
+ * The API refused this request without evaluating it.
+ *
+ * ITS OWN TYPE BECAUSE THE UI HAS TO SAY SOMETHING DIFFERENT. Every other failure on this
+ * path is collapsed into one message on purpose — "the service is unavailable" versus "that
+ * was wrong" tells an attacker whether their guess was even evaluated. A 429 is not in that
+ * set: the caller already knows they are sending too many requests, because they sent them.
+ * Telling them to wait is the only answer that helps a real person who has fumbled their
+ * password on a phone, and it discloses nothing they did not cause.
+ *
+ * IT CARRIES NO DURATION, and that is the API's decision rather than an omission here. The
+ * login policies deliberately send no `Retry-After` — see `RateLimitPolicy` — so there is
+ * no number to render and no number to pace an attacker with (D098).
+ */
+export class ApiRateLimitedError extends Error {}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${apiBaseUrl()}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      /*
+       * THE ONE THING THIS TIER KNOWS THAT THE API CANNOT WORK OUT.
+       *
+       * The browser never talks to `api`, so every request arrives there from this
+       * process: a limiter keyed on the socket's address would put the whole internet in
+       * one bucket and throttle Michelle. The caller's real address is observable only
+       * here, at public ingress, so it is derived here — by the same function that keys
+       * the consultation limiter and fills `ConsultationRequest.SourceIpHash` — and
+       * forwarded. See `lib/client-key.ts`.
+       */
+      [CLIENT_KEY_HEADER]: await clientKey(),
+    },
     body: JSON.stringify(body),
     // Authentication responses must never be cached, by anything, ever.
     cache: "no-store",
@@ -59,6 +89,10 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     // where no answer arrives at all. lib/api/timeouts.ts carries the arithmetic.
     signal: apiSignal(),
   });
+
+  if (response.status === 429) {
+    throw new ApiRateLimitedError(`API request to ${path} was rate limited`);
+  }
 
   if (!response.ok) {
     // The status code is deliberately not surfaced to the caller's UI. An API failure and

@@ -1,11 +1,13 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Practice.Application.Authentication;
 using Practice.Application.Consultations;
 using Practice.Infrastructure.Identity;
 using Practice.Infrastructure.Notifications;
 using Practice.Infrastructure.Persistence;
+using Practice.Infrastructure.RateLimiting;
 
 namespace Practice.Infrastructure;
 
@@ -147,6 +149,26 @@ public static class InfrastructureServices
          * ILoginBookkeeping for the statement and for the two alternatives that lost.
          */
         services.AddScoped<ILoginBookkeeping, LoginBookkeeping>();
+
+        /*
+         * The rate limiter's counters, in the database rather than in this process.
+         *
+         * A SINGLETON FOR THE POLICIES so a test can replace the numbers, and SCOPED for the
+         * store because it reads a request's DbContext and its deadline. Both halves matter:
+         * the numbers are a decision that belongs next to DatabaseTimeouts, and the store is
+         * an uncancellable write like every other one in this tier.
+         *
+         * The alternative that lost was an in-process fixed window — a Dictionary, or
+         * AddRateLimiter's built-in FixedWindowRateLimiter, which caches a limiter instance
+         * per partition INSIDE the middleware. `api` scales horizontally and to zero, so
+         * either one limits a single replica and forgets everything when that replica goes
+         * away. WORK_QUEUE 1.18 declined to ship exactly that and said why; D098 records the
+         * rest.
+         */
+        services.AddSingleton<RateLimitPolicies>();
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<IRateLimitStore, SqlRateLimitStore>();
+
         services.AddScoped<IProviderAuthenticator, ProviderAuthenticator>();
         services.AddScoped<IConsultationNotifier, LoggingConsultationNotifier>();
 

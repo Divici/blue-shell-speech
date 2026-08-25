@@ -3,6 +3,17 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 vi.mock("server-only", () => ({}));
+
+/*
+ * The auth client derives the API's rate-limit partition key from this header before it
+ * calls fetch (`lib/client-key.ts`), so a test driving that client outside a request scope
+ * needs one. A reserved documentation address: this file asserts bounds, not identity, and
+ * `lib/client-key.test.ts` is where the derivation itself is pinned.
+ */
+vi.mock("next/headers", () => ({
+  headers: async () => new Map([["x-forwarded-for", "198.51.100.9, 203.0.113.7"]]),
+}));
+
 vi.mock("@/lib/auth/session", () => ({
   getSession: async () => ({
     providerPublicId: "0f3c1c2e-6b7a-4a1e-9c3d-2f5a8b1c4d6e",
