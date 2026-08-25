@@ -165,6 +165,42 @@ return: every one is a form against an endpoint that already exists and is alrea
         whole argument is that the line cannot be written without running the deletion.
         **Audit every `Control:` line added in `a4d6ff5` the same way**, not just this one.
 
+- [ ] **1.14 Fix the reviewer findings against `6ef8b56`** — **run this BEFORE 1.6 and
+      1.13. F1 is a REGRESSION introduced by 1.12's own fix.** Fix the class, not the
+      instance (see ORCHESTRATION.md).
+      - **F1 (regression)** `ChangeTracker.Clear()` detaches the note the endpoint
+        validated; the lambda re-reads `doomed` and calls `Remove(doomed)` with **no
+        re-check of `Status` / `SupersedesNoteId` / `CanBeDiscarded`**. Michelle taps
+        Discard while the editor's autosave lands `PUT /notes/N` with real clinical text:
+        the re-read returns a non-empty row at `RowVersion` V2, and
+        `DELETE … WHERE Id=@id AND RowVersion=V2` **matches** — where the pre-1.12 code
+        carried V1 and correctly raised `DbUpdateConcurrencyException`. Only the trigger
+        stops it, as a 500 rather than a 409, with **zero `AuditEvents` rows**: the success
+        row is inside the rolled-back transaction and `AuditRefusedDiscardAsync` never runs
+        on that path. D064's three-layer guard is now one layer.
+        `NoteEndpoints.cs:460-500`. **Re-validate inside the lambda, against the row
+        actually being deleted.**
+      - **F2** `WriteAtomicallyAsync` silently discards the caller's staged changes. The
+        next adopter is `AmendNote`: wrapped as written, `ChangeTracker.Clear()` throws away
+        v1's `IsCurrent=false` flip staged by `note.Amend(reason)`, the amendment inserts as
+        a second current row, and `UX_ClinicalNotes_OneCurrentPerAppointment` rejects it —
+        hoist the `Add` above the call too and the endpoint answers **201 Created with a
+        Location for a row that was never inserted**. The contract is prose only; **one
+        `if (db.ChangeTracker.HasChanges()) throw` on entry makes the whole class loud
+        instead of silent.** `AtomicWrites.cs:47-64`.
+      - **F3** No `CommandTimeout` is set in `AddInfrastructure` (while
+        `DesignTimeDbContextFactory.cs:46` sets 180 right beside it), and no
+        `RequestTimeouts` in `Program.cs`. A refusal against a resuming serverless database
+        holds a request and a pooled connection ~3 minutes after the caller has gone.
+        `IAuditWriter`'s docstring names a command timeout no configuration sets — D072's
+        class. `InfrastructureServices.cs:23-29`.
+      - **F4** `strategy.ExecuteAsync(async () => …)` is the token-less overload, so `ct`
+        never reaches the retry loop; a cancelled discard sleeps out the full backoff. A
+        parameter the signature advertises and the helper half-honours. `AtomicWrites.cs:53`.
+      - **F5 (minor)** `BlipsOnceAuditWriter`'s docstring says "the entity is Added and the
+        save is what breaks," but it throws before `SaveChangesAsync`. The D070 defect class
+        inside the harness written to enforce D070.
+
 ## Phase 2 — Slice 6, dictation
 
 - [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
