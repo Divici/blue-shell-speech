@@ -236,6 +236,45 @@ return: every one is a form against an endpoint that already exists and is alrea
         the repo against the migration**, not the configuration. Add this to
         `docs/TEST_STRATEGY.md`.
 
+- [ ] **1.16 Fix the reviewer findings against `98974dc`** — the timeout nesting, **third
+      round**. Run before 1.7 and 1.8.
+      - **Verify by MEASUREMENT, not by deriving a number.** Three consecutive rounds
+        (1.14 F3, 1.15 F1, this) computed a formula that looked right and shipped a test
+        that could not detect it being wrong. If a test asserts an inequality between two
+        constants, it proves the constants, not the system. Instrument the real path and
+        observe the real ceiling.
+      - **F1** `RetryBudgetFor` models ONE 30s command per attempt. One attempt of
+        `DiscardTheRow` issues **three** independently bounded commands — the SELECT, the
+        DELETE save, and the audit save (`AuditWriter` saves on the same context) — so six
+        attempts is ~590s, not 230s. `ProviderContextMiddleware`'s lookup, the endpoint's
+        first read, and the early refusal audit each sit OUTSIDE `strategy.ExecuteAsync`
+        with their own full budget. At ~25s a statement, attempts 1–2 of a discard consume
+        ~200s and the 260s `Request` cancels attempt 3 with three retries unspent.
+        **The backoff term is fine** — EF's real `GetNextDelay` is
+        `min(1s×(2^i−1)×[1,1.1), MaxRetryDelay)` = 0/1.1/3.3/7.7/10 ≈ 22s against the
+        modelled 50s. The command term is the error and it errs unsafe.
+      - **F2** `RequestTimeoutsMiddleware` cancels `RequestAborted` then WAITS for the
+        pipeline; `AuditWriter` holds no token. `DELETE /notes/{unknown-guid}` against a
+        wedged database runs `AuditRefusedDiscardAsync` for up to 230s **past** the 260s
+        cancellation — ~490s real ceiling, while `apiSignal()` aborts at 300s. The stated
+        invariant is false by the repo's own arithmetic: 260 + 230 > 300. So
+        `consultations.ts` can still return `{stored:false}` for a committed enquiry — the
+        bug 1.15 believed it fixed.
+      - **F3** `timeouts.test.ts`'s `fetch`-count guard iterates a hard-coded five-path
+        `CLIENTS` array while claiming a new call site "arrives bounded or arrives red". A
+        seventh module (`web/lib/api/encounters.ts` is the likely next) leaves every layer
+        green — the .NET cross-tree test only reads `API_TIMEOUT_MS` and never looks at a
+        call site. **Glob the directory, do not list files.** D072's fifth appearance,
+        inside the test written to close its fourth.
+      - **F4** `A_request_the_retry_policy_is_carrying_is_not_cut_off` passes
+        `command: 250ms` but `FailureHarness` pins the real command timeout at 30s, so
+        "one command's worth of patience" is fiction and F1's error is unreachable by
+        construction. It also leaves only 750ms of headroom for host warm-up and ~10
+        Testcontainers round trips.
+      - **If this round does not converge, stop and flag it for David** rather than opening
+        a fourth. At that point it is a design question about whether a scale-to-zero
+        database and a synchronous request path are compatible, not a bug.
+
 ## Phase 2 — Slice 6, dictation
 
 - [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
