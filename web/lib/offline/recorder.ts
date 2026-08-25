@@ -17,7 +17,20 @@
  *                             recording has begun (presearch §7.7).
  */
 
-/** 5 minutes. Also enforced by a CHECK constraint on DictationTake.DurationSeconds. */
+/**
+ * 5 minutes, and at present this is the ONLY place it is enforced.
+ *
+ * This comment used to say the cap was "also enforced by a CHECK constraint on
+ * DictationTake.DurationSeconds". There is no `DictationTake` entity, no table and no
+ * constraint: WORK_QUEUE 2.3 still lists `CHECK (DurationSeconds <= 300)` as work to do.
+ * A control described in a comment and absent from the code reads as STRONGER than no
+ * control at all, because the next reader checks whether the problem was considered rather
+ * than whether it was solved (D072) — and here it would have meant trusting a browser
+ * constant to bound what reaches storage.
+ *
+ * Written down as missing rather than quietly implemented, because the constraint belongs
+ * with the migration that creates the table.
+ */
 export const MAX_TAKE_SECONDS = 300;
 
 export type RecorderState = "idle" | "recording" | "paused" | "stopped";

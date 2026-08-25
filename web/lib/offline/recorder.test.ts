@@ -64,9 +64,13 @@ describe("secondsRemaining", () => {
 });
 
 /**
- * The cap is 300 seconds, and it is load-bearing in three places: here, the
- * DictationTake CHECK constraint, and Michelle's actual working range of 2–5 minutes.
- * A change here without the others is a bug.
+ * The cap is 300 seconds, and it is load-bearing in two places: here, and Michelle's
+ * actual working range of 2–5 minutes (D010).
+ *
+ * It used to say three, naming a `DictationTake` CHECK constraint that does not exist —
+ * the entity and its migration are WORK_QUEUE 2.3, unbuilt. Whoever writes them has to
+ * make the number agree with this one; until then a browser constant is the whole of the
+ * enforcement, which is what the comment on MAX_TAKE_SECONDS now says.
  */
 describe("the take cap", () => {
   it("is five minutes", () => {

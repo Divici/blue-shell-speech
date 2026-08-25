@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getSession } from "@/lib/auth/session";
+import { apiSignal } from "@/lib/api/timeouts";
 import type { GuardianValue } from "@/lib/guardian-schema";
 import type { AddressCorrectionValue, NewAddressValue } from "@/lib/address-schema";
 
@@ -86,6 +87,9 @@ async function request<T>(
     },
     // PHI must never be cached, at any layer.
     cache: "no-store",
+    // The API bounds its own requests and answers 504 past that; this bounds the case
+    // where no answer arrives at all. lib/api/timeouts.ts carries the arithmetic.
+    signal: apiSignal(),
   });
 
   /*

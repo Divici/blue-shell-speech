@@ -411,7 +411,13 @@ public static class NoteEndpoints
          */
         (string Reason, string Message)? lateRefusal = null;
 
-        await db.WriteAtomicallyAsync(async attempt =>
+        /*
+         * A LOCAL FUNCTION, so the call can be wrapped without re-indenting the body.
+         *
+         * The wrapping is the point: see the try/finally below. `lateRefusal` is captured
+         * exactly as it was when this was a lambda.
+         */
+        async Task DiscardTheRow(CancellationToken attempt)
         {
             // Reset per attempt: this is a conclusion, and a conclusion from a previous
             // attempt is exactly what the helper's contract says may not survive.
@@ -463,29 +469,76 @@ public static class NoteEndpoints
              */
             lateRefusal = RefusalToDiscard(doomed);
 
-            if (lateRefusal is not null)
-            {
-                /*
-                 * INSIDE the transaction, which then commits carrying only this row.
-                 *
-                 * The refusal is the whole of the write, so there is nothing for it to be
-                 * atomic with — but it must not be rolled back either, and returning here
-                 * is what leaves the transaction with one audit row to commit. The near
-                 * miss is the interesting row: a clinical record was one statement away
-                 * from being deleted.
-                 */
-                await AuditRefusedDiscardAsync(
-                    audit, provider, publicId, lateRefusal.Value.Reason);
-                return;
-            }
+            /*
+             * Returns without writing anything. The refusal's audit row is written by the
+             * `finally` below, outside this transaction — see there for why.
+             *
+             * Nothing is lost by that. A refusal writes no clinical row, so there is
+             * nothing for its audit entry to be atomic WITH; being inside a transaction
+             * bought it only a way to disappear.
+             */
+            if (lateRefusal is not null) return;
 
             var version = doomed.VersionNumber;
 
             db.ClinicalNotes.Remove(doomed);
-            await db.SaveChangesAsync(attempt);
+
+            try
+            {
+                await db.SaveChangesAsync(attempt);
+            }
+            catch (DbUpdateConcurrencyException concurrent)
+            {
+                /*
+                 * THE WINDOW ONE ROUND TRIP LATER THAN THE RE-CHECK ABOVE.
+                 *
+                 * The re-read was the answer to an autosave landing before it. An autosave
+                 * landing AFTER it — between the SELECT and this DELETE — moves the
+                 * RowVersion the DELETE carries in its WHERE clause, so the statement
+                 * matches nothing and EF raises this. Nothing caught it: the API answered
+                 * 500 with an empty AuditEvents table, which is exactly the outcome D081
+                 * closed one window earlier and recorded as closed.
+                 *
+                 * Three interleavings reach it, and they want three different answers, so
+                 * the row is read again rather than guessed at. The read is inside the
+                 * transaction and costs one index seek on a path that has already failed.
+                 *
+                 * The failed save leaves the entity tracked and Deleted — a SaveChanges
+                 * that threw never calls AcceptAllChanges — and WriteAtomicallyAsync
+                 * refuses to commit with anything staged. Detaching is what makes the
+                 * refusal committable; it is also honest, because this attempt is no longer
+                 * deleting anything.
+                 */
+                foreach (var stale in concurrent.Entries) stale.State = EntityState.Detached;
+
+                var current = await db.ClinicalNotes.AsNoTracking()
+                    .SingleOrDefaultAsync(n => n.PublicId == publicId, attempt);
+
+                /*
+                 * Another DELETE for the same note won the race — a double tap. It removed
+                 * the row and wrote the NoteDiscarded row for the removal, so this request
+                 * answers as though it had done it: one deletion, one audit row. Same
+                 * reasoning as the `doomed is null` branch above, reached a moment later.
+                 */
+                if (current is null) return;
+
+                /*
+                 * A refusal the caller can act on, in the vocabulary the other three use.
+                 * `RefusalToDiscard` first, so an autosave that put a child's session into
+                 * the note reads as `has-content` — the same sentence, the same audit
+                 * reason, whichever side of the SELECT it landed on. Uniform outcomes
+                 * across adjacent windows is the whole point; a second vocabulary for the
+                 * same event would make the table uncountable.
+                 */
+                lateRefusal = RefusalToDiscard(current) ?? (
+                    "contended",
+                    "This note changed while it was being discarded, so nothing was removed. Open it to see what it holds now, and discard it again if it is still empty.");
+            }
+
+            if (lateRefusal is not null) return;
 
             /*
-             * Constructed HERE, on each attempt, and not hoisted above the lambda.
+             * Constructed HERE, on each attempt, and not hoisted out of the body.
              *
              * Hoisting looks like the tidier fix and closes only half the hole. It stops
              * the double insert after a failed SAVE — the same instance is re-Added and
@@ -500,7 +553,41 @@ public static class NoteEndpoints
                 providerId: provider.ProviderId,
                 entityType: nameof(ClinicalNote), entityPublicId: publicId,
                 metadata: $"version={version}"));
-        }, ct);
+        }
+
+        try
+        {
+            await db.WriteAtomicallyAsync(DiscardTheRow, ct);
+        }
+        finally
+        {
+            /*
+             * OUTSIDE THE TRANSACTION, AND IN A finally.
+             *
+             * This row used to be written inside the body, which made it the only refusal
+             * row in this endpoint a rollback could erase — the other three are written on
+             * no transaction at all, on a writer that holds no token (D075), and survive
+             * whatever happens next. Inside, a commit that failed through the retry budget
+             * took the record of the near miss with it and answered 500 with nothing on
+             * file, which is precisely the outcome the row exists to prevent. D075's
+             * principle, inverted for the row the code itself calls the interesting one.
+             *
+             * `finally` rather than after the call, because "the transaction failed" and
+             * "no discard was attempted" are different sentences and only one of them is
+             * true. The refusal is a fact about an ATTEMPT — a clinical record was one
+             * statement away and something stopped it — and the fate of a transaction that
+             * was going to write nothing anyway does not un-decide it. So a commit failure
+             * now answers 500 WITH the row on file rather than 500 with an empty table.
+             *
+             * `lateRefusal` is reset at the top of every attempt, so what is written here
+             * is the last attempt's conclusion and never a stale one.
+             */
+            if (lateRefusal is not null)
+            {
+                await AuditRefusedDiscardAsync(
+                    audit, provider, publicId, lateRefusal.Value.Reason);
+            }
+        }
 
         // The same 409 the first pass would have returned, decided a moment later. A race
         // the clinician caused herself reads as a refusal she can act on, not as a fault.
@@ -595,7 +682,11 @@ public static class NoteEndpoints
     /// attempt on a clinical record.
     ///
     /// <paramref name="reason"/> is a fixed vocabulary — not-found, amendment, has-content,
-    /// signed — so the table can be counted by reason rather than read as prose. It is
+    /// signed, contended — so the table can be counted by reason rather than read as prose.
+    /// `contended` is the only one that does not describe the row: it says the row moved
+    /// between the endpoint's SELECT and its DELETE and was still discardable afterwards,
+    /// which is a near miss of a different kind and worth being able to count separately.
+    /// It is
     /// deliberately NOT the sentence returned to the caller: that wording is written for a
     /// clinician and will be rewritten, and an audit row that changes shape when the copy
     /// changes cannot be queried across a year.

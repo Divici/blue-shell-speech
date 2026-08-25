@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getSession } from "@/lib/auth/session";
+import { apiSignal } from "@/lib/api/timeouts";
 import type { GoalValue } from "@/lib/goal-schema";
 
 /**
@@ -68,6 +69,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T | null> {
       ...init?.headers,
     },
     cache: "no-store",
+    // The API bounds its own requests and answers 504 past that; this bounds the case
+    // where no answer arrives at all. lib/api/timeouts.ts carries the arithmetic.
+    signal: apiSignal(),
   });
 
   if (response.status === 404) return null;

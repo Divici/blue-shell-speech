@@ -1,5 +1,7 @@
 import "server-only";
 
+import { apiSignal } from "@/lib/api/timeouts";
+
 /**
  * Server-to-server client for the .NET API.
  *
@@ -53,6 +55,9 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
     // Authentication responses must never be cached, by anything, ever.
     cache: "no-store",
+    // The API bounds its own requests and answers 504 past that; this bounds the case
+    // where no answer arrives at all. lib/api/timeouts.ts carries the arithmetic.
+    signal: apiSignal(),
   });
 
   if (!response.ok) {

@@ -24,10 +24,20 @@ public static class InfrastructureServices
         services.AddDbContext<PracticeDbContext>(options =>
             options.UseSqlServer(connectionString, sql =>
             {
-                // Azure SQL serverless auto-pauses; the first query after a pause can fail
-                // while the database resumes. Without a retry policy that surfaces to
-                // Michelle as an error on an app that is merely waking up.
-                sql.EnableRetryOnFailure(maxRetryCount: 5, TimeSpan.FromSeconds(10), null);
+                /*
+                 * Azure SQL serverless auto-pauses; the first query after a pause can fail
+                 * while the database resumes. Without a retry policy that surfaces to
+                 * Michelle as an error on an app that is merely waking up.
+                 *
+                 * The two arguments come from DatabaseTimeouts because the REQUEST timeout
+                 * is derived from them. They were literals here once, and the request bound
+                 * was chosen separately and came out shorter than this policy's own worst
+                 * case — so the middleware cancelled the wake-up this line exists to
+                 * survive. Whoever changes either number now changes the request bound with
+                 * it, and a test reads all of it back off the running application.
+                 */
+                sql.EnableRetryOnFailure(
+                    DatabaseTimeouts.MaxRetryCount, DatabaseTimeouts.MaxRetryDelay, null);
 
                 /*
                  * Stated, rather than inherited from SqlClient's default.
@@ -38,8 +48,8 @@ public static class InfrastructureServices
                  * application does not own could have replaced it with anything, zero
                  * included. That matters most where nothing else can intervene: an audit
                  * write does not observe the request token by design (D075), so this and
-                 * the retry budget above are the ONLY things bounding it. The value and
-                 * the arithmetic are on DatabaseTimeouts.
+                 * the retry policy above are the ONLY things bounding it — their product
+                 * is DatabaseTimeouts.RetryBudget, where the arithmetic lives.
                  */
                 sql.CommandTimeout(DatabaseTimeouts.CommandSeconds);
             }));

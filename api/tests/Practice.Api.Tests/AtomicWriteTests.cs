@@ -183,15 +183,18 @@ public sealed class AtomicWriteTests(SqlServerFixture sql)
     /// Control: the <c>ct</c> argument on <c>strategy.ExecuteAsync</c> in
     /// AtomicWrites.WriteAtomicallyAsync.
     /// Deleted — reverted to the token-less overload — → red on the elapsed assertion,
-    /// "The retry backoff is 00:00:05, and a cancelled caller waited 00:00:05.0195745 of
-    /// it".
+    /// "The retry backoff is 00:00:05, and a cancelled caller waited 00:00:05.0348071 of
+    /// it". Re-run after SlowlyRetryingExecutionStrategy took its retry count and backoff
+    /// as arguments (D077); same failure, and the backoff it names is now the constant
+    /// CancellationBackoff rather than the class's only one.
     /// </summary>
     [Fact]
     public async Task A_cancelled_write_does_not_sleep_out_the_retry_backoff()
     {
         await using var db = ContextWith(options => options.UseSqlServer(
             sql.ConnectionString,
-            server => server.ExecutionStrategy(deps => new SlowlyRetryingExecutionStrategy(deps))));
+            server => server.ExecutionStrategy(deps => new SlowlyRetryingExecutionStrategy(
+                deps, retries: 3, SlowlyRetryingExecutionStrategy.CancellationBackoff))));
 
         using var caller = new CancellationTokenSource();
 
@@ -210,8 +213,8 @@ public sealed class AtomicWriteTests(SqlServerFixture sql)
         elapsed.Stop();
 
         Assert.True(
-            elapsed.Elapsed < SlowlyRetryingExecutionStrategy.Backoff / 2,
-            $"The retry backoff is {SlowlyRetryingExecutionStrategy.Backoff}, and a cancelled "
-            + $"caller waited {elapsed.Elapsed} of it.");
+            elapsed.Elapsed < SlowlyRetryingExecutionStrategy.CancellationBackoff / 2,
+            $"The retry backoff is {SlowlyRetryingExecutionStrategy.CancellationBackoff}, and "
+            + $"a cancelled caller waited {elapsed.Elapsed} of it.");
     }
 }

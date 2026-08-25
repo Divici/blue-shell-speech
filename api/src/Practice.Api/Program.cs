@@ -60,19 +60,27 @@ builder.Services.AddInfrastructure(
         "ConnectionStrings:Sql is not configured. The API cannot start without a database."));
 
 /*
- * A CEILING ON A REQUEST NOBODY IS WAITING FOR.
+ * A CEILING ON A REQUEST NOBODY IS WAITING FOR — ABOVE THE RETRY BUDGET, NOT UNDER IT.
  *
  * There was none, and no command timeout either, so a request issued against a database
  * resuming from auto-pause could hold a request and a pooled connection for minutes after
- * the caller had gone — the BFF gives up at twenty-five seconds, and nothing on this side
- * noticed. On a container that scales to zero, connections are the resource that runs out
- * first, and the requests holding them are the ones nobody will ever read the answer to.
+ * the caller had gone. On a container that scales to zero, connections are the resource
+ * that runs out first, and the requests holding them are the ones nobody will ever read
+ * the answer to.
+ *
+ * The first version of this bound was thirty seconds, justified in a comment by "the BFF
+ * gives up at twenty-five" — a claim about another tree, in prose, and false on five of
+ * the six clients there. What it actually did was cancel the retry policy that exists so
+ * Michelle's first request of the day survives an auto-paused Azure SQL: six commands and
+ * up to fifty seconds of backoff, killed at thirty. DatabaseTimeouts.Request is DERIVED
+ * from that budget now, and a test reads the command timeout, the retry policy and this
+ * value off the running application and fails if the relationship is ever inverted again.
  *
  * It bounds what can be abandoned and nothing else. Cancelling RequestAborted stops reads
  * and stops a transaction body before its commit; it does NOT stop an audit write, which
  * deliberately holds no token (D075). That asymmetry is the design: an audit row that
- * vanishes when a phone locks is not an audit row, and what bounds THAT is the command
- * timeout and the retry budget, written down on DatabaseTimeouts.
+ * vanishes when a phone locks is not an audit row, and what bounds THAT is
+ * DatabaseTimeouts.RetryBudget.
  *
  * The middleware goes in below, immediately after the exception handler. Options without
  * it would be the D072 defect exactly — configuration present, control absent, and

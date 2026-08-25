@@ -45,6 +45,31 @@ deletion against the new home as part of the move. Nothing mechanical will notic
 a comment and the test stays green either way. Same rule for renaming a clause, changing the
 order of a branch, or lifting a block into a helper (D077).
 
+### The control for a database constraint is the MIGRATION
+
+**The test database is built by running migrations** (`SqlServerFixture`, `Database.MigrateAsync`).
+So the EF configuration is not the control for anything the database enforces:
+
+- Deleting `.IsUnique()` from a `*Configuration` class changes the *model*. The index is
+  already on the table, put there by the migration, and the test stays green.
+- The same goes for `HasCheckConstraint`, `HasTrigger`, column types, and `IsRequired`.
+
+Delete it **from the migration that actually built the object**, and say which migration on the
+`Control:` line.
+
+**"The migration" is not always the one that introduced it.** SQL objects created with
+`CREATE OR ALTER` are re-created by every later migration that touches them, and the last one
+to run is the only definition the database ends up with:
+`TR_ClinicalNotes_PreventDeletingRealNotes` is defined three times — in
+`ClinicalNoteDeletionGuard.Up`, in `AmendmentDeletionGuard.Up`, and again in
+`AmendmentDeletionGuard.Down` — and only the second one is live. All four tests naming that
+trigger stayed green with the emptiness clauses deleted from the first, which is a control
+deletion that verified nothing. **Grep the migration folder for the object's name before
+deleting anything from it.**
+
+Same reasoning as the rest of this section, one layer down: the question is never "is this
+line in the repository", it is "is this line what the database is running".
+
 **Deliberately not automated.** A mutation harness in CI would gate the build on a score,
 which is the coverage-threshold failure mode this file rejects, and CLAUDE.md keeps quality
 signals of this kind out of CI. A hook or a lint rule can only check that the sentence exists

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { apiSignal } from "@/lib/api/timeouts";
+
 /**
  * Public consultation intake, server to server.
  *
@@ -41,16 +43,6 @@ export interface ConsultationSubmission {
 export type ConsultationSubmitResult =
   | { stored: true; publicId: string }
   | { stored: false };
-
-/**
- * Long, because the API scales to zero.
- *
- * A cold start on this platform is measured in tens of seconds (docs/PERFORMANCE.md), and
- * Container Apps ingress QUEUES the request while a replica wakes rather than refusing it.
- * A brisk timeout would therefore turn "the practice had no traffic this morning" into
- * "your enquiry was lost", which is the wrong trade for a form somebody fills in once.
- */
-const TIMEOUT_MS = 25_000;
 
 function apiBaseUrl(): string {
   const url = process.env.API_BASE_URL;
@@ -96,7 +88,19 @@ export const consultationsApi = {
         }),
         // A parent's enquiry must never sit in a cache, at any layer.
         cache: "no-store",
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        /*
+         * The shared bound, which used to be 25 seconds local to this file.
+         *
+         * That number was chosen for a cold start — the API scales to zero, and Container
+         * Apps ingress queues the request while a replica wakes rather than refusing it —
+         * and it was still too short, because it also had to outlast the API's retry
+         * policy against an auto-paused database. Sitting under it turned "the practice
+         * had no traffic this morning" into "your enquiry was lost" on a submission the
+         * API went on to commit, which is the worst possible answer here: the comment
+         * below says there is deliberately no retry precisely because a POST that timed
+         * out may have succeeded.
+         */
+        signal: apiSignal(),
       });
     } catch {
       /*

@@ -276,9 +276,10 @@ public sealed class ProviderAuthenticator(
 /// THE COST, STATED PROPERLY. A write that cannot be cancelled cannot be stopped by the
 /// request timeout either — that policy cancels HttpContext.RequestAborted, and this write
 /// holds no token to cancel. Against a wedged database it is bounded by
-/// DatabaseTimeouts.CommandSeconds multiplied by the retry budget in AddInfrastructure —
-/// six attempts, up to ten seconds of backoff between them — so the ceiling is minutes,
-/// not thirty seconds, on a request nobody is waiting for.
+/// DatabaseTimeouts.RetryBudget — six attempts of thirty seconds with up to ten seconds of
+/// backoff between them, so 3 minutes 50 seconds — on a request nobody is waiting for.
+/// That number is now a named constant rather than a sentence: DatabaseTimeouts.Request is
+/// derived from it, so the two cannot drift apart the way they did.
 ///
 /// This paragraph used to say "holds its connection until the command timeout", which
 /// named a bound that no configuration set at all: AddInfrastructure configured no command
