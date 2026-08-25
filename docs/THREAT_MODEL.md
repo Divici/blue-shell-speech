@@ -95,7 +95,7 @@ threat surface rather than a convenience feature.
 | **I** | 30-day prompt retention, possible human review | **Open — blocker #2.** De-identification is the mitigating control (D018), not a fix |
 | **T** | Model output asserting invented clinical facts | Structured extraction, span provenance, numeric-provenance check (D016, D017) |
 
-### ⑦ browser → IndexedDB
+### ⑦ browser → device storage (IndexedDB, Cache API)
 
 | | Threat | Control |
 |---|---|---|
@@ -103,6 +103,8 @@ threat surface rather than a convenience feature.
 | **I** | Drafts surviving indefinitely | TTL enforced on read **and** on a timer, not only at write |
 | **I** | Another site reading it | Same-origin. HTTPS only |
 | **I** | PHI in `localStorage`/`sessionStorage` | **Absolutely prohibited.** Lint rule, not just a policy |
+| **I** | PHI in the **Cache API** — `no-store` does not reach it | The service worker writes the cache **once, at install, from a constant allowlist of files in `public/`**. No `cache.put` exists anywhere in `sw.js`, so a network response has no path into storage. Activation deletes every other cache on the origin |
+| **I** | A cached authenticated page served to a later viewer | The fetch handler answers navigations from the network and never stores them; it is an allowlist, so a route added later is not handled at all rather than handled wrongly |
 | **D** | iOS 7-day eviction destroying an unsynced draft | Detect standalone mode, prompt to install; sync-on-foreground; `online`-event retry |
 
 ### ⑧ CI/CD → Azure

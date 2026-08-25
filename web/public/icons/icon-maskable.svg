@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Blue Shell Speech">
+  <!--
+    The adaptive (maskable) icon.
+
+    A launcher crops this to whatever shape it likes — circle, squircle, teardrop, rounded
+    square — and only the middle 80% survives. So the tile is full-bleed with NO rounded
+    corners (the mask supplies them; rounding here would show as a double-rounded sticker)
+    and the mark is drawn smaller than in icon.svg so its scallops stay inside the safe
+    circle of 409.6px. lib/pwa/shell-assets.test.ts checks both.
+  -->
+  <defs>
+    <!-- The ribs are clipped to the body — see the note in icon.svg. -->
+    <clipPath id="shell-body-maskable">
+      <path d="M31 55c-11-2-21-12-23-27l7 3 6-6 6 5 6-6 6 6 6-5 6 6 7-3c-2 15-12 25-23 27l1 2a17 17 0 0 1-6 0Z"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" fill="#E8F3FF"/>
+
+  <!-- 64 * 5.6 = 358.4px of drawn box, centred in 512. -->
+  <g transform="translate(76.8 76.8) scale(5.6)">
+    <!-- Optical centring — see the note in icon.svg. -->
+    <g transform="translate(-1 -7.5)">
+      <path d="M31 55c-11-2-21-12-23-27l7 3 6-6 6 5 6-6 6 6 6-5 6 6 7-3c-2 15-12 25-23 27l1 2a17 17 0 0 1-6 0Z" fill="#2D7FF9"/>
+      <g clip-path="url(#shell-body-maskable)" fill="none" stroke="#1B4FA3" stroke-opacity="0.75" stroke-width="2.6" stroke-linecap="round">
+        <path d="M32 52V22"/>
+        <path d="m25 51-5-23"/>
+        <path d="m39 51 5-23"/>
+        <path d="M19 47 12 31"/>
+        <path d="M45 47 52 31"/>
+      </g>
+    </g>
+  </g>
+</svg>

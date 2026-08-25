@@ -44,6 +44,22 @@ const nextConfig: NextConfig = {
             value: [
               "default-src 'self'",
               "script-src 'self' 'unsafe-inline'",
+              /*
+               * The service worker, allowed DELIBERATELY rather than by inheritance.
+               *
+               * `worker-src` is absent by default and falls back to `script-src` — which
+               * carries `unsafe-inline` for the reason stated above. Stating it here is a
+               * tightening, not a loosening: the worker may be loaded from this origin
+               * and from nothing else, and no inline source can ever become one. The
+               * D042 deviation stays where it is and is not extended to a new context.
+               */
+              "worker-src 'self'",
+              /*
+               * Same reasoning for the manifest, which otherwise falls back to
+               * `default-src`. An installable app is a new fetch the browser makes on its
+               * own initiative; it gets its own line.
+               */
+              "manifest-src 'self'",
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data:",
               "font-src 'self'",
@@ -84,6 +100,22 @@ const nextConfig: NextConfig = {
             value: "geolocation=(), camera=(), microphone=(self), payment=()",
           },
         ],
+      },
+      {
+        /*
+         * The service worker script must revalidate on every update check.
+         *
+         * Next serves `public/` with a cacheable default. A worker script the browser is
+         * allowed to reuse is a worker the browser keeps running: an update that changes
+         * the offline shell, or the precache allowlist, would not reach an installed app
+         * until the stored copy expired. `max-age=0, must-revalidate` makes every update
+         * check a real request while still allowing a 304.
+         *
+         * This is additive to the `/:path*` block above — Next applies both, and this one
+         * only sets a key that block does not.
+         */
+        source: "/sw.js",
+        headers: [{ key: "Cache-Control", value: "public, max-age=0, must-revalidate" }],
       },
     ];
   },

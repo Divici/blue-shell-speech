@@ -1,0 +1,75 @@
+<!doctype html>
+<!--
+  The offline shell.
+
+  Hand-written, static, and deliberately outside the Next application. It is precached by
+  `public/sw.js` and served whenever a navigation cannot reach the server.
+
+  WHY IT IS NOT A NEXT ROUTE. A page rendered by the app references content-hashed CSS and
+  JS under `/_next/static/`, so serving it offline means precaching those chunks too — a
+  precache list that changes on every build, invalidating the whole cache on every deploy,
+  and an offline screen that renders as unstyled markup the first time a hash moves. This
+  file has one stylesheet and one image, both on the allowlist, and neither name ever
+  changes. `lib/pwa/shell-assets.test.ts` keeps its colours tied to the palette so being
+  outside the design system does not mean drifting from it.
+
+  WHY IT RUNS NO JAVASCRIPT. A static file cannot carry a per-response CSP nonce, and
+  D042's `unsafe-inline` deviation is scoped to the marketing pages and is not being
+  extended. The screen that exists because everything else failed should have nothing left
+  in it that can fail.
+
+  THE COPY IS HELD TO WHAT IS TRUE TODAY. No reassurance about saved work, no promise that
+  anything is usable without a connection. When recording lands (WORK_QUEUE 2.4) this text
+  changes with it.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Offline | Blue Shell Speech</title>
+    <link rel="stylesheet" href="/offline.css" />
+  </head>
+
+  <body>
+    <header class="masthead">
+      <img src="/icons/icon.svg" alt="" width="40" height="40" />
+      <span class="wordmark">Blue Shell Speech</span>
+    </header>
+
+    <main id="main" class="shell">
+      <p class="eyebrow">No connection</p>
+      <h1>You&rsquo;re offline</h1>
+      <p class="lead">This device can&rsquo;t reach the practice server right now.</p>
+
+      <h2>Why this screen is empty</h2>
+      <p>
+        Patient records, your schedule and clinical notes are fetched from the server each
+        time you open them, and are never stored on this device. That is deliberate &mdash;
+        a phone that keeps a copy of a child&rsquo;s record is a phone that can lose one.
+        It also means there is nothing here for this screen to show you.
+      </p>
+
+      <h2>What needs a connection</h2>
+      <ul class="unavailable">
+        <li>Your schedule and today&rsquo;s visits</li>
+        <li>Every patient record, guardian and goal</li>
+        <li>Opening, editing or signing a clinical note</li>
+      </ul>
+
+      <h2>What to do</h2>
+      <ol class="steps">
+        <li>Move somewhere with signal &mdash; a doorway or the street usually beats the
+          middle of a house.</li>
+        <li>Then try again. The app will load normally as soon as it can reach the
+          server.</li>
+      </ol>
+
+      <p class="action"><a class="button" href="/">Try again</a></p>
+    </main>
+
+    <footer class="footnote">
+      <p>Blue Shell Speech &middot; practice tools</p>
+    </footer>
+  </body>
+</html>

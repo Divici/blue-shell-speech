@@ -536,6 +536,20 @@ test("serves the documented security headers", async ({ page }) => {
   expect(headers["content-security-policy"], "CSP must be present").toBeTruthy();
   expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
   expect(headers["content-security-policy"]).toContain("object-src 'none'");
+
+  /*
+   * The service worker and the manifest are allowed BY NAME. `worker-src` is absent by
+   * default and falls back to `script-src`, which carries the `unsafe-inline` D042 scoped
+   * to the marketing HTML; naming it keeps that deviation where it was put instead of
+   * letting a new execution context inherit it.
+   *
+   * Control: `"worker-src 'self'"` in `next.config.ts`.
+   * Deleted → red, "Error: expect(received).toContain(expected) // indexOf. Expected
+   * substring: \"worker-src 'self'\"" against the served policy, which then starts
+   * "default-src 'self'; script-src 'self' 'unsafe-inline'; manifest-src 'self'; …".
+   */
+  expect(headers["content-security-policy"]).toContain("worker-src 'self'");
+  expect(headers["content-security-policy"]).toContain("manifest-src 'self'");
   expect(headers["x-content-type-options"]).toBe("nosniff");
   expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
   expect(headers["x-frame-options"]).toBe("DENY");

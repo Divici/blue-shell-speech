@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Blue Shell Speech">
+  <!--
+    The app icon: the same scallop shell as components/brand/ShellMark.tsx, on a brand-blue
+    tile. The geometry is copied verbatim from that component and lib/pwa/shell-assets.test.ts
+    requires it to stay identical — two drawings of one logo diverge, and the divergence is
+    invisible until somebody sees the home screen and the header side by side.
+
+    Rounded corners belong to this variant only. It is the browser-UI and Android-legacy
+    icon; the adaptive one is icon-maskable.svg, where the launcher supplies the shape.
+  -->
+  <defs>
+    <!--
+      The ribs are clipped to the shell body. They run from the hinge past the scallop
+      points — correct in ShellMark.tsx, where they sit on a coloured body at 30-40px and
+      the overshoot is invisible, and wrong on a 512px tile with the fill inverted, where
+      it reads as five sticks poking out of a fan. Clipping changes no geometry: the path
+      data is still the component's, which is what lib/pwa/shell-assets.test.ts checks.
+    -->
+    <clipPath id="shell-body">
+      <path d="M31 55c-11-2-21-12-23-27l7 3 6-6 6 5 6-6 6 6 6-5 6 6 7-3c-2 15-12 25-23 27l1 2a17 17 0 0 1-6 0Z"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="#E8F3FF"/>
+
+  <!-- The mark, drawn on ShellMark 64-unit grid and scaled onto this canvas. -->
+  <g transform="translate(38.4 38.4) scale(6.8)">
+    <!--
+      Optical centring. The shell sits low and slightly right within its 64-unit box — it
+      spans x 8-58 and y 22-57, so its visual centre is (33, 39.5) rather than (32, 32).
+      Centring the box would leave the mark visibly low on the tile.
+    -->
+    <g transform="translate(-1 -7.5)">
+      <path d="M31 55c-11-2-21-12-23-27l7 3 6-6 6 5 6-6 6 6 6-5 6 6 7-3c-2 15-12 25-23 27l1 2a17 17 0 0 1-6 0Z" fill="#2D7FF9"/>
+      <g clip-path="url(#shell-body)" fill="none" stroke="#1B4FA3" stroke-opacity="0.75" stroke-width="2.6" stroke-linecap="round">
+        <path d="M32 52V22"/>
+        <path d="m25 51-5-23"/>
+        <path d="m39 51 5-23"/>
+        <path d="M19 47 12 31"/>
+        <path d="M45 47 52 31"/>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -95,10 +95,22 @@ granted.
 ### Public site — shipped
 
 ```
-default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';
-img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self';
-frame-ancestors 'none'; base-uri 'self'; object-src 'none'; upgrade-insecure-requests
+default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src 'self';
+manifest-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none';
+base-uri 'self'; object-src 'none'
 ```
+
+**`upgrade-insecure-requests` used to appear in this block and is not served.** It was
+removed in D048 — it broke every WebKit E2E run on `http://localhost`, and HSTS with a
+two-year `max-age` already guarantees what it was there for. The line above is now the
+policy `next.config.ts` actually emits, asserted end-to-end in
+`e2e/homepage.spec.ts:"serves the documented security headers"`.
+
+`worker-src` and `manifest-src` are named rather than left to fall back. Without
+`worker-src`, the service worker is governed by `script-src` and inherits the
+`unsafe-inline` below — a deviation scoped to marketing HTML would silently extend to a
+new execution context. Naming them is a tightening.
 
 `unsafe-inline` on `script-src` is a **documented deviation**, not an oversight.
 
@@ -136,6 +148,36 @@ Authenticated responses: `Cache-Control: no-store`. Set at the `(app)` layout, n
 per-route means someone forgets. Asserted by a test hitting every authenticated route.
 
 **Ranked #1 in the threat model** as the most likely accidental disclosure.
+
+### The Cache API is a separate store, and `no-store` does not reach it
+
+`Cache-Control` governs the HTTP cache and any CDN edge. It says nothing about the Cache
+API, which is script-controlled, unencrypted, disk-backed storage on the device — the same
+class of exposure as `localStorage`, which is prohibited outright. A service worker that
+kept a copy of a rendered page would defeat both `no-store` and `force-dynamic` without
+touching either.
+
+`web/public/sw.js` is therefore built so that **PHI has no path into the Cache API**:
+
+- **The cache is written exactly once, at install, from a constant allowlist.** There is no
+  `cache.put` anywhere in the file — not on success, not on a fallback. A network response
+  cannot be stored, so no response can carry clinical content into storage.
+- **The fetch handler is an allowlist, not a catch-all.** A same-origin GET is answered from
+  the cache only if its pathname is literally in that constant. Every authenticated page,
+  every BFF route and every Next chunk falls through with no `respondWith`, so a route added
+  later cannot land in a handler by accident — there is no handler for it to land in.
+- **Activation deletes every other cache on the origin,** not merely older versions of this
+  one. Anything that ever did write clinical content into the Cache API is removed on the
+  next deploy.
+- Every entry on the allowlist is a file committed under `web/public` — a compile-time
+  static asset with no request context. Tests assert that each entry resolves to a real file
+  there and that none matches a page in `app/(app)`, discovering the routes by walking the
+  directory rather than listing them.
+
+Offline, a navigation to any route returns one static screen (`public/offline.html`) that
+says what needs a connection. **This application is deliberately not offline-capable**: the
+alternative is a device holding a readable copy of a child's record for as long as the
+browser chooses to keep it.
 
 ## Logging
 

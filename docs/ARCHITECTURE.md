@@ -77,11 +77,18 @@ web/
 │   └── manifest.ts                # PWA
 ├── components/
 │   ├── ui/                        # shadcn — behind the login only
+│   ├── pwa/                       # service-worker registration; renders nothing
 │   └── marketing/                 # hand-built to the comps
 ├── lib/
 │   ├── api-client/                # typed, generated from OpenAPI
 │   ├── auth/                      # session, MFA
+│   ├── pwa/                       # registration + the worker's own tests
 │   └── offline/                   # encrypted IndexedDB (D005)
+├── public/
+│   ├── sw.js                      # service worker — precache-only, no PHI (D093)
+│   ├── offline.html               # the offline shell: static, no JS, no build step
+│   ├── offline.css                # its only stylesheet; palette-checked by test
+│   └── icons/                     # app icons, SVG sources + generated PNGs
 └── e2e/
 ```
 
@@ -187,6 +194,8 @@ depend on AI availability** — that is a hard requirement, not a resilience nic
 |---|---|
 | No Background Sync API in Safari | Feature-detect; sync-on-foreground plus an `online`-event retry |
 | Only home-screen PWAs escape 7-day storage eviction | Detect standalone mode; prompt to install. Offline drafts are not durable in a tab |
+| iOS reads its own metadata, not the manifest's, for the home-screen icon and label | `apple-touch-icon` (opaque, full-bleed — Safari rounds it rather than compositing, so transparent corners render black) and `apple-mobile-web-app-title`. Standalone display comes from the manifest's `display`, which is what the eviction rule turns on |
+| `context.setOffline()` and `route.abort()` break WebKit navigations *above* the service worker in Playwright | The worker's routing decisions are tested against the shipped `public/sw.js` in Vitest, which runs everywhere; the browser plumbing is asserted on Chromium only, and the spec says so |
 | `MediaRecorder` emits mp4/AAC, not webm | Server-side transcode to 16 kHz PCM before Azure Speech |
 | Screen lock kills the tab | Takes are capped at 300s and uploaded per-take, not per-session |
 

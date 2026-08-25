@@ -1,0 +1,163 @@
+/*
+ * Styles for the offline shell, and for nothing else.
+ *
+ * Served raw to the browser with no build step in front of it, so the design tokens are
+ * copied in as literals rather than imported from `lib/design-tokens.ts`. Copies drift, so
+ * `lib/pwa/shell-assets.test.ts` requires every hex in this file to be a palette colour and
+ * measures the body pair against WCAG AA — the same standard `design-tokens.test.ts` holds
+ * the rest of the site to.
+ *
+ * No web font. `next/font` self-hosts Playfair and Inter for the application, but their
+ * files are content-hashed and therefore not on the worker's allowlist; a font-face
+ * pointing at a URL that is not cached is a page that waits for a network that is not
+ * there. The system stack renders instantly and is legible at arm's length in a car, which
+ * is the situation this screen is actually for.
+ */
+
+:root {
+  /* mist */
+  --surface: #F5FAFF;
+  /* white */
+  --card: #FFFFFF;
+  /* ink — body copy */
+  --ink: #3A4553;
+  /* inkMuted — supporting copy */
+  --ink-muted: #55606E;
+  /* navy — headings */
+  --navy: #1B4FA3;
+  /* blueAction — the smallest darkening of the brand blue that clears AA with white text */
+  --accent: #1D6FE0;
+  /* ice — hairlines and tinted rows */
+  --edge: #E8F3FF;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  /* Larger than the site default: this is read on a phone, often not held close. */
+  font-size: 17px;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 1rem 1.25rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--edge);
+}
+
+.wordmark {
+  font-weight: 700;
+  color: var(--navy);
+  letter-spacing: -0.01em;
+}
+
+.shell {
+  flex: 1;
+  width: 100%;
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  line-height: 1.2;
+  color: var(--navy);
+}
+
+h2 {
+  margin: 2rem 0 0.5rem;
+  font-size: 1.0625rem;
+  color: var(--navy);
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+.lead {
+  font-size: 1.0625rem;
+  color: var(--ink-muted);
+}
+
+.unavailable,
+.steps {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+}
+
+.unavailable li,
+.steps li {
+  margin-bottom: 0.375rem;
+}
+
+.action {
+  margin-top: 2rem;
+}
+
+.button {
+  display: inline-block;
+  padding: 0.875rem 1.75rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--card);
+  font-weight: 600;
+  text-decoration: none;
+  /*
+   * 48px minimum target. This is tapped one-handed, in a car park, by someone who has just
+   * finished a session — the one interaction on the page has no excuse for being small.
+   */
+  min-height: 48px;
+}
+
+.button:hover,
+.button:focus-visible {
+  background: var(--navy);
+}
+
+.button:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.footnote {
+  padding: 1rem 1.25rem 2rem;
+  border-top: 1px solid var(--edge);
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+.footnote p {
+  margin: 0;
+  max-width: 34rem;
+  margin-inline: auto;
+}
