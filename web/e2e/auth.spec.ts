@@ -111,7 +111,7 @@ test.describe("unauthenticated access", () => {
  * protected by existing there, not by remembering to add a guard.
  */
 test.describe("patient routes are protected", () => {
-  const routes = ["/dashboard", "/patients", "/patients/new", "/today"];
+  const routes = ["/dashboard", "/patients", "/patients/new", "/today", "/appointments/new"];
 
   // A note is the most sensitive page in the app: clinical observations about a child.
   const noteRoute = "/notes/11111111-1111-1111-1111-111111111111";

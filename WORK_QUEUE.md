@@ -1,0 +1,149 @@
+# Autonomous Work Queue
+
+**Purpose:** this file is the resume point. Any invocation — a cron wake-up, a fresh
+session, a continued one — reads this, takes the topmost unchecked task, finishes it
+completely, ticks it, and moves on.
+
+## Rules for whoever is working
+
+1. **Finish a task completely before ticking it.** Code, tests, lint, typecheck, commit,
+   push. A ticked box means CI-green and pushed, not "written".
+2. **Never stop to ask a question.** If a task turns out to need David, move it to
+   *Blocked* at the bottom with the reason, and take the next one.
+3. **Never say "continuing" and stop.** Either do the next task or tick nothing.
+4. **Commit per task**, with the project's message style and no AI attribution.
+5. **Run the full gate before pushing:** `npm run lint && npm run typecheck && npx vitest run`
+   in `/web`, `dotnet test` in `/api`. Playwright when a route or component changed.
+6. **Docker must be running** for `dotnet test` (Testcontainers). Start it if it is not.
+7. Update this file in the same commit as the work it describes.
+
+---
+
+## Phase 1 — Usability gaps
+
+The app has more API than UI. These are the cheapest work with the highest visible
+return: every one is a form against an endpoint that already exists and is already tested.
+
+- [x] **1.1 Appointment creation UI** — `/today` and a patient page can schedule a visit.
+      Patient picker, type, date/time in practice-local, duration, travel block, notes.
+      Surface the 409 conflict message (including the travel-time case) as readable text.
+- [ ] **1.2 Start-a-note entry point** — from a visit on `/today`, create or open its
+      note. Currently `/notes/[publicId]` is reachable only by typing a URL.
+- [ ] **1.3 Goals UI** — list, add, mark met, discontinue, on a patient page. AAC fields
+      appear only when the domain is AAC (the aggregate and a CHECK both enforce it).
+- [ ] **1.4 Guardian + address forms** — add/edit on a patient page. `HasLegalAuthority`
+      must be its own explicit control, never inferred from primary contact.
+- [ ] **1.5 `ConsultationRequest` entity + persistence** — closes slice 1's one unmet
+      criterion. Includes the **contentless** notification ("New consultation request,
+      sign in to view") and `SourceIpHash`. Wire `app/consultation/actions.ts`, removing
+      its `TODO(slice 3)`.
+- [ ] **1.6 `Encounter` + `ResourceDocument` entities** — ship empty per the scope ledger.
+      Adding a billing table to a live clinical database later means backfilling history.
+- [ ] **1.7 Remove Next template assets** — `next.svg`, `vercel.svg`, `globe.svg`,
+      `file.svg`, `window.svg` in `web/public/`.
+- [ ] **1.8 `/health/ready` dependency checks** — register SQL and blob under the "ready"
+      tag. Removes the `TODO(slice 3)` in `Program.cs`, and **flips the test that pins
+      zero checks** — that failure is the reminder, by design.
+
+## Phase 2 — Slice 6, dictation
+
+- [ ] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
+- [ ] **2.2 Install prompt + standalone detection** — only home-screen PWAs escape iOS's
+      7-day storage eviction. Explain the durability limit to the user rather than
+      assuming drafts are safe.
+- [ ] **2.3 `DictationSession` + `DictationTake` entities + migration** — including the
+      `CHECK (DurationSeconds <= 300)` constraint, the status enum, and `BlobDeletedAtUtc`.
+- [ ] **2.4 Recording UI** — one button toggling pause/resume, elapsed timer, takes list,
+      auto-stop at the cap. No visual interaction required once recording starts (§7.7).
+- [ ] **2.5 Chunked resumable upload + blob storage** — a 9.6 MB take must survive a
+      dropped connection. Managed identity to the `session-audio` container.
+- [ ] **2.6 Background job + status polling** — queue-driven, co-located in `api` (D014).
+      Status enum surfaced meaningfully: `Transcribing` is not `Generating`.
+- [ ] **2.7 Server-side transcode to 16 kHz PCM** — iOS emits mp4/AAC, Azure Speech wants
+      PCM.
+- [ ] **2.8 `ITranscriptionService` + Azure Speech implementation** — behind the provider
+      seam, with the `IsPhiEligible` guard.
+- [ ] **2.9 Failure paths** — transcription down preserves audio, offers retry, allows
+      manual entry (§19).
+- [ ] **2.10 Audio retention** — deleted on signature, 30-day hard cap, deletion audited.
+- [ ] **2.11 Background Sync feature detection** — Safari has none. Fall back to
+      sync-on-foreground plus an `online` retry.
+
+## Phase 3 — Slices 7 and 8, the AI pipeline
+
+Buildable and testable against synthetic data only — blocker #1 means the sole model
+deployment is `GlobalStandard`, and §22 forbids real data regardless.
+
+- [ ] **3.1 De-identification** — roster-first (patient and guardians are known rows), NER
+      second. Token map in memory only, never persisted or logged.
+- [ ] **3.2 `ExtractedObservation` entity** — every quantitative field NULLABLE with no
+      default. Null means *not stated*.
+- [ ] **3.3 `IClinicalExtractionService`** — strict JSON schema, not "return JSON" in a
+      prompt. `sourceQuote` + `sourceOffset` required on every claim.
+- [ ] **3.4 Deterministic validation gate** — no model involved. Unresolvable offset
+      rejects the claim; rejections degrade to *missing*, never to a substituted value.
+      Completeness invariant: every active goal appears in addressed ∪ notAddressed ∪
+      missing.
+- [ ] **3.5 Missing-info analysis + review chips** — fillable by typing or by tapping to
+      speak. Never a suggested clinical value.
+- [ ] **3.6 `IClinicalNoteGenerationService`** — receives validated structure only, never
+      the transcript (D016).
+- [ ] **3.7 Numeric-provenance check** — every number in the output must trace to
+      validated input, or the job fails with no draft produced.
+- [ ] **3.8 OpenRouter provider that throws on non-synthetic data** (D019).
+- [ ] **3.9 Synthetic eval corpus + harness** — numeric accuracy and fabrication rate
+      reported separately from WER. Does not gate CI.
+
+## Phase 4 — Slice 9, hardening
+
+- [ ] **4.1 Serilog destructuring policy** — redacts PHI-bearing types, plus a test that
+      serialises every such entity and asserts no clinical value appears.
+- [ ] **4.2 Nonce-based CSP for the authenticated app** — the public site's
+      `unsafe-inline` deviation does not extend here (D042).
+- [ ] **4.3 Rate limiting on login and dictation upload.**
+- [ ] **4.4 `web` → `api` caller identity** — currently network isolation alone, weaker
+      than `THREAT_MODEL.md` boundary 2 specifies.
+- [ ] **4.5 Capacity banner + admin alerts** — against internal counters (§13).
+- [ ] **4.6 Alert on overdue audio deletion** — a silently failing lifecycle job looks
+      exactly like a working one.
+- [ ] **4.7 Audit completeness test** — every event type in `SECURITY.md` emitted and
+      queryable; verify the app principal cannot UPDATE or DELETE `AuditEvents`.
+
+## Phase 5 — Documentation and review
+
+- [ ] **5.1 `HIPAA_DATA_FLOW.md`** — every hop that touches PHI.
+- [ ] **5.2 `API_SPEC.md`** — now that the endpoints exist.
+- [ ] **5.3 `UX_FLOWS.md`** — now that the screens exist.
+- [ ] **5.4 `PRD.md`.**
+- [ ] **5.5 Security risk analysis draft (§14.6)** — everything that does not require
+      David's sign-off.
+- [ ] **5.6 Vendor review table (§14.5)** — every service touching ePHI.
+- [ ] **5.7 Maryland retention research** — authoritative sources, minors' records.
+- [ ] **5.8 `/super-review` on slices 2–6**, fix every confirmed finding.
+- [ ] **5.9 Authenticated-screen design pass** — no comps exist; build in the established
+      language and record it.
+- [ ] **5.10 Update `STUDY_GUIDE.md`** — interview prep, per the global rule.
+
+---
+
+## Blocked — needs David
+
+Do not attempt these. Recorded so nothing is silently dropped.
+
+- Buy the practice domain → unblocks the CDN (blocker #6) and a real contact address.
+- Upgrade Azure to Pay-As-You-Go under the practice identity → unblocks blockers #1, #4, #5.
+- Request `DataZoneStandard` quota → unblocks a PHI-safe model deployment.
+- Real practice phone and email.
+- A timed dictation of a **fictional** patient → eval-corpus fixture #1.
+- `$20`/month budget with 50/80/100% alerts.
+- Confirm Container Apps HIPAA eligibility, or approve the App Service swap.
+- Sign-off on residual risk if Modified Abuse Monitoring is refused.
+- Final go-live sign-off (§34).
+
+---
+
+## Log
+
+Append one line per completed task: date, task id, commit sha.
+
+- 2026-08-25 · 1.1 appointment creation UI · practice-local to UTC conversion tested across both DST boundaries; 409 conflict surfaces the clashing visit time

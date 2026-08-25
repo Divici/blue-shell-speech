@@ -54,9 +54,75 @@ async function request<T>(path: string, init?: RequestInit): Promise<T | null> {
   return (await response.json()) as T;
 }
 
+/** A visit that could not be booked because it overlaps another, travel time included. */
+export class SchedulingConflictError extends Error {
+  constructor(
+    message: string,
+    readonly conflictingStartUtc: string | null,
+  ) {
+    super(message);
+  }
+}
+
 export const scheduleApi = {
   /** `date` is a LOCAL practice date (yyyy-mm-dd), not a UTC instant. */
   day: (date: string) => request<DaySchedule>(`/appointments/day/${date}`),
+
+  /**
+   * Books a visit.
+   *
+   * `startUtc` must already be a UTC instant — the API rejects anything else, and the
+   * conversion from Michelle's wall clock happens in lib/practice-time.ts where it is
+   * tested against both DST boundaries.
+   */
+  create: async (body: {
+    patientPublicId: string;
+    appointmentType: string;
+    startUtc: string;
+    durationMinutes: number;
+    travelBlockMinutes: number | null;
+    notes: string | null;
+  }): Promise<{ publicId: string } | null> => {
+    const session = await getSession();
+    if (!session) throw new Error("No provider session.");
+
+    const response = await fetch(`${apiBaseUrl()}/appointments`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Provider-Id": session.providerPublicId,
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+
+    if (response.status === 404) return null;
+
+    /*
+     * 409 is not a failure to report generically.
+     *
+     * It means the visit clashes with another once travel time is counted (D056) — a
+     * fact Michelle needs to act on, and one a plain "could not save" would hide. The
+     * conflicting start time comes back so the UI can name it.
+     */
+    if (response.status === 409) {
+      const body = (await response.json().catch(() => null)) as {
+        message?: string;
+        conflictingStartUtc?: string;
+      } | null;
+
+      throw new SchedulingConflictError(
+        body?.message ?? "That overlaps another visit.",
+        body?.conflictingStartUtc ?? null,
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(`Scheduling failed with ${response.status}`);
+    }
+
+    return (await response.json()) as { publicId: string };
+  },
 };
 
 /**

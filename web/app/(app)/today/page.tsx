@@ -38,6 +38,13 @@ export default async function TodayPage(props: PageProps<"/today">) {
           {formatDayHeading(date)}
         </h1>
 
+        <Link
+          href={`/appointments/new?date=${date}`}
+          className="rounded-full bg-blue-action px-5 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
+        >
+          Schedule a visit
+        </Link>
+
         <nav aria-label="Change day" className="ml-auto flex items-center gap-2">
           <Link
             href={`/today?date=${shiftDate(date, -1)}`}
@@ -63,9 +70,15 @@ export default async function TodayPage(props: PageProps<"/today">) {
       </div>
 
       {visits.length === 0 ? (
-        <p className="mt-8 rounded-2xl border border-ice bg-white px-5 py-10 text-center text-ink-muted">
-          Nothing scheduled.
-        </p>
+        <div className="mt-8 rounded-2xl border border-ice bg-white px-5 py-10 text-center">
+          <p className="text-ink-muted">Nothing scheduled.</p>
+          <Link
+            href={`/appointments/new?date=${date}`}
+            className="mt-4 inline-block rounded-full bg-blue-action px-5 py-2.5 text-sm font-semibold text-white"
+          >
+            Schedule a visit
+          </Link>
+        </div>
       ) : (
         <>
           <ol className="mt-8 space-y-4">
