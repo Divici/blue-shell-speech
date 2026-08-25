@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
 using Microsoft.AspNetCore.Http.Timeouts;
@@ -73,9 +75,13 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
         return (user.Id, email);
     }
 
-    private async Task<PasswordResponse> PostPasswordAsync(string email, string password)
+    private Task<PasswordResponse> PostPasswordAsync(string email, string password) =>
+        PostPasswordAsync(_client, email, password);
+
+    private static async Task<PasswordResponse> PostPasswordAsync(
+        HttpClient client, string email, string password)
     {
-        var response = await _client.PostAsJsonAsync(
+        using var response = await client.PostAsJsonAsync(
             "/auth/password", new PasswordRequest(email, password));
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<PasswordResponse>())!;
@@ -105,18 +111,45 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
     /// <summary>
     /// An unknown email and a wrong password must be indistinguishable to the caller.
     /// Anything else turns the login endpoint into an account-enumeration oracle.
+    ///
+    /// COMPARES THE WHOLE ANSWER — status line and body bytes — rather than two parsed
+    /// fields. This test was green throughout the commit that made the two branches answer
+    /// 200 and 504, because it read the response through <c>EnsureSuccessStatusCode</c>: a
+    /// 504 with an empty body could only surface here as a thrown HttpRequestException,
+    /// which is not what "these two are the same" looks like when it fails.
+    ///
+    /// AND IT STILL CANNOT SEE THE DEFECT IT WAS CITED AGAINST, which is worth writing
+    /// down rather than pretending otherwise. The divergence was a cancellation token, and
+    /// against a database that answers in a millisecond nothing is ever cancelled — both
+    /// branches behave identically here whichever token they hold.
+    /// <see cref="Unknown_email_answers_like_a_wrong_password_when_the_request_bound_fires"/>
+    /// is the one that can, because it makes the request bound fire.
+    ///
+    /// Control: the <c>PasswordOutcome.InvalidCredentials</c> the unknown-email branch
+    /// returns, which is what makes it collapse into the same response as a wrong password
+    /// at <c>AuthEndpoints</c>' <c>_ =></c> arm.
+    /// Falsified to <c>PasswordOutcome.LockedOut</c> — a falsification rather than a
+    /// deletion, because there is no line to delete: the defect shape here is a branch
+    /// answering differently, not a missing guard — → red on the body comparison,
+    /// "Assert.Equal() Failure: Strings differ ↓ (pos 11) / Expected:
+    /// "{"status":"invalid","userId":null,"lockou"··· / Actual:
+    /// "{"status":"locked_out","userId":null,"loc"···". Position 11 is the first byte that
+    /// differs, which is what comparing the whole body buys over comparing one parsed field.
     /// </summary>
     [Fact]
     public async Task Unknown_email_is_indistinguishable_from_a_wrong_password()
     {
         var (_, email) = await SeedProviderAsync();
 
-        var unknown = await PostPasswordAsync("nobody@example.com", Password);
-        var wrong = await PostPasswordAsync(email, "wrong-password-here");
+        var unknown = await AttemptAsync(_client, "nobody@example.com", Password);
+        var wrong = await AttemptAsync(_client, email, "wrong-password-here");
 
         Assert.Equal(wrong.Status, unknown.Status);
-        Assert.Null(unknown.UserId);
-        Assert.Null(wrong.UserId);
+        Assert.Equal(wrong.Body, unknown.Body);
+        Assert.Equal(HttpStatusCode.OK, unknown.Status);
+
+        // The body they agree on has to be the refusal, not a shared error page.
+        Assert.Contains("\"invalid\"", unknown.Body, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -504,6 +537,387 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
             + "this tier's bounds and DatabaseTimeouts.Ceiling is not a ceiling.");
     }
 
+    // ------------------- the enumeration oracle, measured (1.18 F1)
+
+    /// <summary>
+    /// An unknown email and a wrong password answer with the same status, the same bytes,
+    /// and in the same time — MEASURED, against a database slow enough that the request
+    /// bound fires while the lookup is still running.
+    ///
+    /// WHY THE HEALTHY-DATABASE SIBLING ABOVE CANNOT SEE THIS, which is the finding rather
+    /// than a footnote to it. <see cref="Unknown_email_is_indistinguishable_from_a_wrong_password"/>
+    /// runs against a database that answers in a millisecond, so
+    /// <c>HttpContext.RequestAborted</c> is never cancelled and a branch that observes it
+    /// behaves exactly like a branch that does not. THE DIVERGENCE ONLY EXISTS AFTER
+    /// CANCELLATION. Two further reasons it could not have seen it even then: it went
+    /// through <c>EnsureSuccessStatusCode</c>, so a 504 with an empty body surfaces as a
+    /// thrown HttpRequestException rather than as the difference it is; and it compared two
+    /// parsed fields, never the clock and never the audit table.
+    ///
+    /// MEASURED AGAINST THE CODE THIS TEST WAS WRITTEN FOR, with every statement against
+    /// the users table stalled 1.5s under a 1s request bound: unknown email → 504, empty
+    /// body, 1527 ms, and ZERO rows carrying <c>reason=unknown-email</c>; known email with a
+    /// wrong password → 200, <c>{"status":"invalid",…}</c>, 4696 ms. Three dimensions and
+    /// the audit trail, all four telling an attacker which addresses are real.
+    ///
+    /// Control: the <c>await bookkeeping.CountFailureAsync(absent.Id)</c> in
+    /// <c>ProviderAuthenticator</c>'s unknown-email branch — the round trip that matches the
+    /// one the wrong-password branch makes.
+    /// Deleted → red, "An unknown email answered in 1561 ms and a wrong password in 3068 ms
+    /// — 1506 ms apart, which is more than one 1500 ms round trip against the users table."
+    /// Exactly one stall's worth, which is the shape of the claim: the branch that finds
+    /// nothing was skipping the write the branch that finds something performs.
+    ///
+    /// Control: the ABSENCE of <c>ct</c> on that branch's <c>Task.Run</c>.
+    /// Restored, which is how it shipped → red on the first assertion, "Assert.Equal()
+    /// Failure: Values differ / Expected: OK / Actual: GatewayTimeout". Not a slower branch
+    /// — a different status code, because Task.Run refuses to start on a cancelled token
+    /// and the throw escapes before the audit write.
+    /// </summary>
+    [Fact]
+    public async Task Unknown_email_answers_like_a_wrong_password_when_the_request_bound_fires()
+    {
+        var (_, email) = await SeedProviderAsync();
+
+        var requestBound = TimeSpan.FromSeconds(1);
+        var grace = TimeSpan.FromSeconds(10);
+        var stall = TimeSpan.FromMilliseconds(1500);
+
+        using var stalled = StalledFactory(
+            requestBound, grace, new StallsEveryStatementAgainst("AspNetUsers", stall));
+
+        using var client = stalled.CreateClient();
+
+        /*
+         * Warmed twice, and both warm-ups are unknown emails.
+         *
+         * The first request of a process drags in host start-up, the connection pool and
+         * the password hasher's first PBKDF2 — none of which either branch pays for again,
+         * and this test compares two elapsed times. Unknown rather than wrong-password so
+         * the warm-up does not spend one of the five failures the lockout counts.
+         */
+        (await client.GetAsync("/health/live")).Dispose();
+        await AttemptAsync(client, $"warm-{Guid.NewGuid():N}@example.com", Password);
+
+        var watermark = await AuditWatermarkAsync();
+
+        var unknown = await AttemptAsync(
+            client, $"nobody-{Guid.NewGuid():N}@example.com", Password);
+        var wrong = await AttemptAsync(client, email, "wrong-password-here");
+
+        Assert.Equal(wrong.Status, unknown.Status);
+        Assert.Equal(wrong.Body, unknown.Body);
+
+        var gap = (unknown.Elapsed - wrong.Elapsed).Duration();
+
+        Assert.True(
+            gap < stall,
+            $"An unknown email answered in {unknown.Elapsed.TotalMilliseconds:0} ms and a "
+            + $"wrong password in {wrong.Elapsed.TotalMilliseconds:0} ms — {gap.TotalMilliseconds:0} ms "
+            + $"apart, which is more than one {stall.TotalMilliseconds:0} ms round trip "
+            + "against the users table. A caller who can time the difference can tell "
+            + "which addresses have accounts, which is the whole reason the unknown-email "
+            + "branch does work at all instead of returning early.");
+
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var unrecorded = await db.AuditEvents.AsNoTracking()
+            .CountAsync(e => e.Id > watermark
+                && e.EventType == AuditEventType.LoginFailed
+                && e.Metadata == "reason=unknown-email");
+
+        Assert.True(
+            unrecorded > 0,
+            "A credential attempt against an address with no account left no row in "
+            + "AuditEvents. The response is deliberately indistinguishable from every "
+            + "other refusal, so nothing else in the system records it — walking an "
+            + "address list through this endpoint would leave no evidence at all "
+            + "(docs/SECURITY.md §Audit).");
+    }
+
+    // ------------------- the lockout under concurrency (1.18 F2)
+
+    /// <summary>
+    /// Twenty wrong passwords arriving at once count as twenty, and the account locks.
+    ///
+    /// MEASURED, and the measurement is the finding: four waves of twenty simultaneous
+    /// wrong-password posts — EIGHTY attempts — left <c>AccessFailedCount = 4</c> and
+    /// <c>LockoutEnd = NULL</c>. One increment survived per wave. Every request in a wave
+    /// read the same row and therefore the same <c>ConcurrencyStamp</c>, which
+    /// <c>IdentityDbContext</c> maps as a concurrency token; one UPDATE matched it and the
+    /// other nineteen raised <c>DbUpdateConcurrencyException</c>, which
+    /// <c>UserStore.UpdateAsync</c> catches and converts into an <c>IdentityResult</c> that
+    /// this application then threw away. A five-failure lockout that an N-wide caller can
+    /// buy N guesses per count is not a lockout.
+    ///
+    /// Reads are delayed rather than the whole database being stalled, so the window
+    /// between the lookup and the write is wide DELIBERATELY instead of by luck, and the
+    /// write itself runs at full speed — the race is what is under test, not a bound. The
+    /// application's own request timeout and grace are left exactly as production sets
+    /// them for the same reason.
+    ///
+    /// Asserted in the product's own terms as well as in the row: the next attempt, with
+    /// the RIGHT password, has to be refused.
+    ///
+    /// Control: the single-statement failure count — <c>await CountFailureAsync(user)</c> in
+    /// the bad-password branch, reaching <c>LoginBookkeeping</c>'s
+    /// <c>CASE WHEN [AccessFailedCount] + 1 >= @max</c> UPDATE.
+    /// Replaced with <c>await userManager.AccessFailedAsync(user)</c>, which is how it
+    /// shipped → red, "Twenty simultaneous wrong passwords left AccessFailedCount = 1 and
+    /// LockoutEnd = NULL, and the CORRECT password was then answered
+    /// "mfa_enrolment_required"." ONE increment out of twenty, and the account not locked —
+    /// the reviewer's eighty-attempt measurement reproduced at a quarter of the size.
+    ///
+    /// That same edit also turns
+    /// <see cref="No_identity_result_on_the_login_path_is_discarded"/> red, at
+    /// ProviderAuthenticator.cs:141. Two tests, two different reasons, and neither covers
+    /// for the other: this one would stay green if the count were atomic and its result
+    /// thrown away, and that one would stay green if the result were read from a
+    /// read-modify-write that loses the race.
+    /// </summary>
+    [Fact]
+    public async Task Twenty_simultaneous_wrong_passwords_lock_the_account()
+    {
+        var (userId, email) = await SeedProviderAsync();
+
+        using var contended = ContendedFactory(
+            new DelaysEveryRead(TimeSpan.FromMilliseconds(250)));
+
+        using var client = contended.CreateClient();
+        (await client.GetAsync("/health/live")).Dispose();
+
+        await Task.WhenAll(Enumerable.Range(0, 20).Select(_ =>
+            AttemptAsync(client, email, "wrong-password-here")));
+
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var user = await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId);
+
+        var refused = await PostPasswordAsync(client, email, Password);
+
+        Assert.True(
+            refused.Status == "locked_out",
+            $"Twenty simultaneous wrong passwords left AccessFailedCount = "
+            + $"{user.AccessFailedCount} and LockoutEnd = "
+            + $"{user.LockoutEnd?.ToString("O", CultureInfo.InvariantCulture) ?? "NULL"}, "
+            + $"and the CORRECT password was then answered \"{refused.Status}\". The "
+            + "five-failure lockout in AddInfrastructure is the only thing between this "
+            + "account and an offline password list, and a caller who sends its guesses "
+            + "concurrently is not being counted.");
+
+        Assert.NotNull(user.LockoutEnd);
+    }
+
+    /// <summary>
+    /// A wrong password that could not be counted is not answered as an ordinary refusal.
+    ///
+    /// THE OTHER HALF OF "STOP DISCARDING THE RESULT". Making the count atomic removes the
+    /// cause the reviewer measured; it does not make the write infallible, and the version
+    /// of this defect that matters is not the concurrency loss but the SILENCE — a login
+    /// endpoint that answers "invalid" while its lockout counter sits still looks exactly
+    /// like one that works, from the outside and from the logs, forever.
+    ///
+    /// A 500 with a trace id is a worse experience than "invalid" and the correct answer.
+    /// The alternative on offer is a five-failure lockout that never reaches five, in front
+    /// of the single account holding every record in the practice.
+    ///
+    /// AND THE AUDIT ROW IS STILL THERE, which is the ordering on the class doing its job:
+    /// the attempt is on file before the bookkeeping is attempted, so the request failing
+    /// loses the count and not the evidence (D092).
+    ///
+    /// Control: the <c>if (!await bookkeeping.CountFailureAsync(...)) throw</c> in
+    /// <c>ProviderAuthenticator.CountFailureAsync</c>.
+    /// Reduced to a bare <c>await bookkeeping.CountFailureAsync(user.Id);</c> — the discard
+    /// this finding is about → red, "The endpoint answered 200 for a credential it refused
+    /// without counting." A 200 with <c>{"status":"invalid"}</c>: indistinguishable from a
+    /// working lockout, from the caller's side and from the logs.
+    /// </summary>
+    [Fact]
+    public async Task A_wrong_password_that_cannot_be_counted_is_not_refused_quietly()
+    {
+        var (userId, email) = await SeedProviderAsync();
+
+        using var uncountable = new PracticeApiFactory(
+            sql.ConnectionString,
+            services => services.AddScoped<ILoginBookkeeping, CountsNothing>());
+
+        using var client = uncountable.CreateClient();
+
+        using var response = await client.PostAsJsonAsync(
+            "/auth/password", new PasswordRequest(email, "wrong-password-here"));
+
+        Assert.False(
+            response.IsSuccessStatusCode,
+            $"The endpoint answered {(int)response.StatusCode} for a credential it refused "
+            + "without counting. A refusal that does not reach the lockout counter is a "
+            + "guess that cost the caller nothing, and nothing else in the system would "
+            + "ever report that the counter had stopped moving.");
+
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        Assert.True(
+            await db.AuditEvents.AsNoTracking().AnyAsync(e =>
+                e.ActorUserId == userId
+                && e.EventType == AuditEventType.LoginFailed
+                && e.Metadata == "reason=bad-password"),
+            "The request failed and took the record of the attempt with it. The audit row "
+            + "is written before the bookkeeping precisely so that the half which can be "
+            + "reconstructed is the half that is lost (D092).");
+    }
+
+    /// <summary>
+    /// Nothing on the login path throws an <c>IdentityResult</c> away.
+    ///
+    /// A GUARD OVER THE CLASS, NOT OVER THE SEVEN CALL SITES THAT WERE WRONG. Identity
+    /// reports failure by return value, so a discarded result is a silent no-op — and every
+    /// one of these read like ordinary code: <c>await userManager.AccessFailedAsync(user);</c>
+    /// is what the documentation shows. Seven of them were discarded here, including the
+    /// one that decided whether MFA was actually switched on. Listing the seven would be a
+    /// guard that holds a hard-coded list and stays green the day an eighth is written,
+    /// which is this repository's most repeated defect (D090, docs/TEST_STRATEGY.md).
+    ///
+    /// So the set comes from REFLECTION over UserManager's own surface, and the file is
+    /// read as text: a call is discarded when the statement begins with it. An awaited call
+    /// whose value is assigned, tested, or passed as an argument does not begin a
+    /// statement, which is exactly the distinction being asserted.
+    ///
+    /// Control: any one of the checked call sites in <c>ProviderAuthenticator</c> — the
+    /// <c>Succeeded(await userManager.SetTwoFactorEnabledAsync(user, true), …)</c> in
+    /// CompleteMfaEnrolmentAsync was the one run.
+    /// Unwrapped to <c>await userManager.SetTwoFactorEnabledAsync(user, true);</c> → red,
+    /// "…Discarded at: ProviderAuthenticator.cs:300." Worth noting that the mutation is
+    /// what the ASP.NET Core documentation shows, and the build stays green: this is a
+    /// defect with no compiler diagnostic behind it, which is the whole reason for a guard
+    /// that reads the file as text.
+    /// </summary>
+    [Fact]
+    public void No_identity_result_on_the_login_path_is_discarded()
+    {
+        var reporting = typeof(UserManager<PracticeUser>)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(method => method.ReturnType == typeof(Task<IdentityResult>))
+            .Select(method => method.Name)
+            .Distinct()
+            .ToArray();
+
+        Assert.True(
+            reporting.Length > 0,
+            "UserManager no longer reports failure through IdentityResult. This guard reads "
+            + "its surface rather than naming methods, so revisit it rather than deleting "
+            + "it.");
+
+        var path = RepoTree.File(
+            "api/src/Practice.Infrastructure/Identity/ProviderAuthenticator.cs");
+
+        var discarded = File.ReadAllLines(path)
+            .Select((text, index) => (Line: index + 1, Text: text.Trim()))
+            .Where(line => !line.Text.EndsWith(','))
+            .Where(line => reporting.Any(name => line.Text.StartsWith(
+                $"await userManager.{name}(", StringComparison.Ordinal)))
+            .Select(line => $"ProviderAuthenticator.cs:{line.Line}")
+            .ToArray();
+
+        Assert.True(
+            discarded.Length == 0,
+            "Identity signals failure by return value, so an awaited call whose "
+            + "IdentityResult begins and ends a statement is a write that can silently do "
+            + "nothing. Discarded at: " + string.Join(", ", discarded)
+            + ". That is how a failed SetTwoFactorEnabledAsync came to answer "
+            + "\"enrolled\" for an account with no second factor.");
+    }
+
+    // ------------------- a success row for a sign-in that never happened (1.18 F3)
+
+    /// <summary>
+    /// A sign-in that produced no session is not audited as one.
+    ///
+    /// MEASURED: with <c>UPDATE [AspNetUsers]</c> stalled twenty seconds under a 1s bound
+    /// and a 2s grace, <c>POST /auth/mfa/verify</c> carrying a VALID code answered 504 with
+    /// no session — and AuditEvents nevertheless held <c>LoginSucceeded</c>, while
+    /// <c>LastMfaAtUtc</c> was still null. The row described a sign-in whose own state
+    /// never landed.
+    ///
+    /// D092'S ASYMMETRY DOES NOT TRANSFER, AND INVERTS. On a FAILURE the audit row is
+    /// written first, because the fact is established the moment the credential check
+    /// returns and losing the row loses the only evidence the attempt happened. On a
+    /// SUCCESS the fact is not established until the writes the session depends on have
+    /// landed, so a row written first is a PREDICTION — and <c>LoginSucceeded</c> is the
+    /// row an investigator uses to decide which sessions a breach has to be scoped to. A
+    /// missing success row can be reconstructed from what a session leaves behind: the very
+    /// next request carries the provider context and every read of a record writes
+    /// PatientViewed with the actor on it. A false one is not falsifiable by anything.
+    ///
+    /// The mechanism is ordering, as it is on the failure paths, pointing the other way:
+    /// the row is the LAST write before the result is returned, so "the row exists" and
+    /// "the caller was told it succeeded" fail together.
+    ///
+    /// The password step runs on the unstalled client on purpose — it is setup, not the
+    /// subject, and its own bookkeeping would spend the grace before the verify was
+    /// reached.
+    ///
+    /// Control: the POSITION of the <c>LoginSucceeded</c> write in
+    /// <c>ProviderAuthenticator.CompleteSignInAsync</c> — after the bookkeeping, not before.
+    /// Moved back above <c>ClearFailuresAsync</c>, which is how it shipped → red, "1
+    /// LoginSucceeded row(s) exist for a request that answered 504 with no session, and
+    /// LastMfaAtUtc is null." The row is not merely early: it is the only trace of the
+    /// event, and it says the opposite of what happened. Note the deletion is a MOVE — the
+    /// write is still there and still on the deadline, which is why nothing else in the
+    /// suite notices.
+    /// </summary>
+    [Fact]
+    public async Task A_sign_in_that_never_completed_is_not_audited_as_a_success()
+    {
+        var (userId, email) = await SeedProviderAsync();
+        var enrolled = await EnrolAsync(userId);
+
+        Assert.Equal("mfa_required", (await PostPasswordAsync(email, Password)).Status);
+
+        using var stalled = StalledFactory(
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(2),
+            new StallsEveryStatementMatching(
+                "UPDATE [AspNetUsers]", TimeSpan.FromSeconds(20)));
+
+        using var client = stalled.CreateClient();
+        (await client.GetAsync("/health/live")).Dispose();
+
+        using var verify = await client.PostAsJsonAsync(
+            "/auth/mfa/verify", new MfaRequest(userId, Totp(enrolled.SharedKey)));
+
+        var session = verify.IsSuccessStatusCode
+            ? await verify.Content.ReadFromJsonAsync<SessionResponse>()
+            : null;
+
+        // The premise. If this ever produces a session the test proves nothing, and the
+        // stall is no longer reaching the sign-in's own bookkeeping.
+        Assert.True(
+            session?.Succeeded is not true,
+            "The sign-in completed despite its bookkeeping being stalled far past the "
+            + "grace, so this test is no longer measuring the window the finding names.");
+
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        var claimed = await db.AuditEvents.AsNoTracking()
+            .CountAsync(e => e.ActorUserId == userId
+                && e.EventType == AuditEventType.LoginSucceeded);
+
+        var user = await db.Users.AsNoTracking().SingleAsync(u => u.Id == userId);
+
+        Assert.True(
+            claimed == 0,
+            $"{claimed} LoginSucceeded row(s) exist for a request that answered "
+            + $"{(int)verify.StatusCode} with no session, and LastMfaAtUtc is "
+            + $"{user.LastMfaAtUtc?.ToString("O", CultureInfo.InvariantCulture) ?? "null"}. "
+            + "That row is what an investigator scopes a breach with, so a sign-in it "
+            + "describes has to have happened.");
+
+        Assert.Null(user.LastMfaAtUtc);
+    }
+
     /// <summary>
     /// The application's own pipeline, scaled down, with named statements made to hang.
     ///
@@ -523,9 +937,55 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
                 options.DefaultPolicy = new RequestTimeoutPolicy { Timeout = requestBound });
         });
 
+    /// <summary>
+    /// The application's own bounds, with named statements slowed down.
+    ///
+    /// Unlike <see cref="StalledFactory"/> the request timeout and the deadline are left
+    /// exactly as production sets them. What the caller of this wants is a RACE, and
+    /// scaling the bounds down would cut the race short rather than widen it.
+    /// </summary>
+    private PracticeApiFactory ContendedFactory(params IInterceptor[] interceptors) =>
+        new(sql.ConnectionString, FailureHarness.With(sql.ConnectionString, interceptors));
+
     // ---------------------------------------------------------------- helpers
 
-    private async Task<EnrolmentCompleteDto> EnrolAsync(string userId)
+    /// <summary>What a caller who is timing this endpoint can actually observe.</summary>
+    private sealed record Answer(HttpStatusCode Status, string Body, TimeSpan Elapsed);
+
+    /// <summary>
+    /// One password attempt, measured the way an attacker measures it — status line, body
+    /// bytes, and the clock stopped once the body has been read rather than when the
+    /// headers arrive.
+    /// </summary>
+    private static async Task<Answer> AttemptAsync(
+        HttpClient client, string email, string password)
+    {
+        var started = Stopwatch.GetTimestamp();
+
+        using var response = await client.PostAsJsonAsync(
+            "/auth/password", new PasswordRequest(email, password));
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        return new Answer(response.StatusCode, body, Stopwatch.GetElapsedTime(started));
+    }
+
+    /// <summary>
+    /// The highest audit id at this instant.
+    ///
+    /// The suite shares one database and the metadata on a failed login deliberately
+    /// carries no address, so "a row saying reason=unknown-email exists" is true whatever
+    /// this test does. A watermark is what makes the assertion about THIS attempt.
+    /// </summary>
+    private async Task<long> AuditWatermarkAsync()
+    {
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        return await db.AuditEvents.AsNoTracking().MaxAsync(e => (long?)e.Id) ?? 0;
+    }
+
+    private async Task<Enrolled> EnrolAsync(string userId)
     {
         var begin = await _client.PostAsJsonAsync("/auth/mfa/enrol/begin", new UserRequest(userId));
         var enrolment = (await begin.Content.ReadFromJsonAsync<EnrolmentDto>())!;
@@ -535,8 +995,12 @@ public sealed class AuthenticationTests(SqlServerFixture sql) : IAsyncLifetime, 
 
         var result = (await complete.Content.ReadFromJsonAsync<EnrolmentCompleteDto>())!;
         Assert.True(result.Succeeded);
-        return result;
+        return new Enrolled(enrolment.SharedKey, result.RecoveryCodes);
     }
+
+    /// <summary>The shared key AND the codes: a test that has to produce a valid TOTP
+    /// after enrolment needs the first, and one testing single-use needs the second.</summary>
+    private sealed record Enrolled(string SharedKey, List<string> RecoveryCodes);
 
     /// <summary>Generates the code an authenticator app would show for this shared key.</summary>
     private static string Totp(string base32Key) =>

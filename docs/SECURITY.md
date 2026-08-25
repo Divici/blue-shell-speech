@@ -7,6 +7,16 @@ intention.
 as "HIPAA compliant" — in code, docs, README, UI, or conversation with Michelle (§14.1).
 Compliance is a property of an organization's practices, not a property of software.
 
+**Tense rule, and it is load-bearing.** Every sentence in this file is either a description of
+code that exists today or is marked **Planned — WORK_QUEUE n.n**. Nothing here is written in the
+present tense about work that is queued. Three consecutive reviews found controls described here
+and absent from the tree, twice in paragraphs a previous sweep had just corrected — an exponential
+lockout backoff, an IP on the login audit row, a breached-password list, a Serilog redaction
+policy, Dependabot, pinned action SHAs, an authorization test that fails CI. **A control described
+and absent reads as STRONGER than no control at all**, because the next reader checks whether the
+question was considered rather than whether it was answered (D072). A row that says "planned"
+keeps the intent on the page and makes the gap countable; deleting it loses both.
+
 ---
 
 ## Authentication
@@ -19,42 +29,64 @@ ASP.NET Core Identity, self-hosted. No external IdP.
 | Minimum length | 12 characters. **No composition rules, no forced rotation** — both push users toward weaker, reused, written-down passwords (NIST SP 800-63B) |
 | Breached-password check | **NOT BUILT.** No compromised-password validator is registered in `AddInfrastructure`. Intended, unqueued |
 | **MFA** | **TOTP, mandatory, not optional.** Single account holding all PHI |
-| Recovery codes | Generated once, hashed at rest, single-use, regenerable. Treated as credentials |
-| Lockout | Fixed **15 minutes** after 5 failures (`IdentityOptions.DefaultLockoutTimeSpan`), not exponential. `LoginFailed` is audited with the reason and the actor; **it does not carry an IP** — `AuditEvent.IpAddress` is filled on patient reads only. Rate limiting on login is WORK_QUEUE 4.3 |
-| Session | `HttpOnly`, `Secure`, `SameSite=Lax`, sliding 30 min, absolute 12 h (`web/lib/auth/session.ts`) |
-| Re-auth | Required to change password, regenerate recovery codes, or disable MFA |
+| Recovery codes | Generated once at enrolment, hashed at rest, single-use. Treated as credentials. **Regeneration after enrolment is not built** — there is no endpoint for it; the ten issued at enrolment are all there are |
+| Lockout | Fixed **15 minutes** after 5 failures (`IdentityOptions.DefaultLockoutTimeSpan`), not exponential. The count is a **single UPDATE the database serialises** (`ILoginBookkeeping`), not Identity's read-modify-write — see below. `LoginFailed` is audited with the reason and the actor; **it does not carry an IP** — `AuditEvent.IpAddress` is filled on patient reads only |
+| Rate limiting on login | **Planned — WORK_QUEUE 1.19**, pulled forward from 4.3 because 1.18 measured it as an open hole rather than a scheduled one. Nothing in `api` limits attempts by source or by account; `web/lib/rate-limit.ts` serves the public consultation form only. The lockout above is the whole of the throttle today, and it does not touch attempts against addresses that have no account |
+| Session | `HttpOnly`, `Secure` in production, `SameSite=Lax`, sliding 30 min, absolute 12 h (`web/lib/auth/session.ts`) |
+| Re-auth | **Planned.** `PracticeUser.LastMfaAtUtc` is recorded on every completed sign-in so the timestamp exists, but no endpoint changes a password, regenerates recovery codes, or disables MFA, so there is nothing yet to gate. When one lands, it is gated on that timestamp |
 
-Three rows of that table described controls this application does not have — an exponential
-backoff, an IP on the lockout's audit row, and a breached-password list — and said so in the
-present tense in the document a compliance reviewer reads. That is the same defect as the
-§Audit paragraph below and it is corrected the same way: by saying what the code does. **A
-control described and absent reads as STRONGER than no control at all**, because the next
-person checks whether the question was considered rather than whether it was answered (D072).
+**The lockout counts concurrent attempts, and did not until D097.** Identity's
+`AccessFailedAsync` reads the user, increments in memory, and saves with the row's previous
+`ConcurrencyStamp` in the WHERE clause; `UserStore.UpdateAsync` catches the resulting
+`DbUpdateConcurrencyException` and returns a failed `IdentityResult`, which the caller discarded.
+Measured: **four waves of twenty simultaneous wrong passwords — eighty attempts — left
+`AccessFailedCount = 4` and `LockoutEnd = NULL`.** One increment survived per wave, so an N-wide
+caller bought N guesses per counted failure. It is now one statement against the row, and
+`ProviderAuthenticator` refuses to answer at all if that statement changes nothing:
+a refusal that is not counted is a guess that cost the attacker nothing.
 
-**MFA cannot be disabled without re-authentication and an audit event.** The account recovery
-path is the weakest link in any MFA deployment — an attacker who can reset MFA does not need to
-defeat it.
+**MFA cannot be disabled by any path this application exposes, because no such path exists.**
+The account recovery path is the weakest link in any MFA deployment — an attacker who can reset
+MFA does not need to defeat it — so when one is built it carries re-authentication and its own
+audit event. Today the only recovery is a single-use recovery code, which signs in and does not
+alter the second factor.
 
 ## Authorization
 
 **Server-side, always, in `api`.** Hiding UI is not authorization (`CLAUDE.md` #6).
 
-- Provider identity is derived from the validated token. **Never** from a request body or query
-  parameter, however convenient.
-- Every query filters by `ProviderId` via an EF Core global query filter — a default that must
-  be explicitly overridden, not remembered.
+- Provider identity is derived from the request context `api` resolves, **never** from a request
+  body or query parameter, however convenient. **Today that context comes from a header the BFF
+  forwards** (`ProviderContextMiddleware`, resolved by opaque `PublicId` against an active
+  provider row) and the only thing stopping anyone else sending it is internal ingress. **A
+  validated token audience is planned — WORK_QUEUE 4.4**, and `AuthEndpoints`' own docstring has
+  said so since it was written.
+- Every query against patient data filters by `ProviderId` via an EF Core global query filter —
+  a default that must be explicitly overridden, not remembered. A null provider matches **no**
+  rows. Identity's tables, `Providers` and `AuditEvents` are deliberately unfiltered: they are
+  not patient data, and resolving the provider is the step that arms the filter.
 - Resource-level ownership re-checked on every read and write, including reads.
 - `PublicId` in URLs; `Id` never leaves the server.
 
-Tested by an integration suite that attempts cross-provider access on **every** endpoint. Adding
-an endpoint without adding its authorization test fails CI.
+Tested by an integration suite that attempts cross-provider access on the endpoints it names
+(`PatientIsolationTests`, `NoteImmutabilityTests`, `ConsultationInboxTests`). **It is a named
+list, not the route table**: nothing enumerates `EndpointDataSource`, so adding an endpoint
+without an authorization test does NOT fail CI. This sentence claimed the opposite for five
+slices. **Planned — WORK_QUEUE 4.8**, parameterized over the route table so a new endpoint
+arrives covered or arrives red.
 
 ## Transport and network
 
-- HTTPS only. HSTS with a long max-age, `includeSubDomains`.
-- `api`: **internal ingress**. No public route exists.
-- SQL: private endpoint, public network access disabled.
-- Storage: no anonymous access; clinical audio and public resources in **separate containers**.
+- HTTPS only. HSTS with a two-year max-age, `includeSubDomains`, `preload`
+  (`web/next.config.ts`, asserted end-to-end).
+- `api`: **internal ingress**. No public route exists (`infra/provision-apps.sh --ingress
+  internal`, and the script prints the command to verify it independently).
+- Storage: no anonymous access; clinical audio and public resources in **separate containers**
+  (`session-audio`, `public-resources`, created separately in `infra/provision-platform.sh`).
+- SQL: **public network access is currently ALLOWED for Azure services on the dev
+  subscription**, which never holds PHI (D025). `infra/provision-sql.sh` says so where it does
+  it. **A private endpoint with public access disabled is a go-live deliverable — see
+  `docs/PRELAUNCH_BLOCKERS.md`**, not a control this environment has today.
 
 ## Secrets
 
@@ -64,16 +96,19 @@ password.**
 | Where | Mechanism |
 |---|---|
 | Local dev | `dotnet user-secrets`, `.env.local` (gitignored) |
-| Azure | Managed identity. SQL, Storage, Speech, OpenAI all identity-based |
-| Remaining secrets | Key Vault, referenced by Container Apps |
-| CI | GitHub OIDC federated credentials — **no long-lived secret** |
+| Azure — Storage | System-assigned managed identity, role assigned in `infra/provision-apps.sh`. **Built** |
+| Azure — SQL | Managed identity; **no SQL password exists anywhere**. The database-side `CREATE USER FROM EXTERNAL PROVIDER` grant is a documented manual step (`infra/dbgrant`), not something a script has run |
+| Azure — Speech, OpenAI | Resources provisioned; **identity is not wired yet** and no application code calls either (Phases 2 and 3). `infra/provision-ai.sh` deliberately does not read the keys |
+| Remaining secrets | **Planned.** No Key Vault is provisioned and nothing references one. The row is kept because it is where the next secret goes, not because it is in place |
+| CI | GitHub OIDC federated credentials — **no long-lived secret**. Built (`infra/provision-github-oidc.sh`, `.github/workflows/deploy.yml`) |
 
-`disableLocalAuth=true` on Cognitive Services once identity is wired, which turns key theft into
-a non-event by removing keys as an auth path.
+`disableLocalAuth=true` on Cognitive Services **once identity is wired** — which it is not — will
+turn key theft into a non-event by removing keys as an auth path.
 
-Enforcement: PreToolUse hooks block writes to secret-shaped paths; `.gitignore` deny-lists;
-secret scanning on push. **The repo is public — a committed secret is compromised the moment it
-is pushed, and rotation is the only remedy.**
+Enforcement: PreToolUse hooks block writes to secret-shaped paths
+(`.claude/hooks/protect-env.sh`); `.gitignore` deny-lists; Gitleaks runs as its own CI job on
+every push to `main` and every pull request, against the whole tree. **The repo is public — a
+committed secret is compromised the moment it is pushed, and rotation is the only remedy.**
 
 ## Headers and CSP
 
@@ -127,25 +162,43 @@ content and holds no PHI. Every string on it is a compile-time constant in
 **This does not generalise.** The moment a public page renders anything a visitor supplied,
 this deviation is void.
 
-### Authenticated app — required, slice 2
+### Authenticated app — **Planned — WORK_QUEUE 4.2**
 
 Nonce-based, **no `unsafe-inline`**. The app is dynamic by necessity, so the tradeoff above
 does not apply. This is where the control actually matters: it renders PHI and holds a
 session cookie, which is the combination `THREAT_MODEL.md` boundary 1 names.
 
+**It is not built.** `next.config.ts` serves ONE policy for the whole origin — the public one
+above, `unsafe-inline` included — so the authenticated app is presently governed by the
+deviation that was scoped to marketing HTML. That is the gap 4.2 closes, and it is the reason
+that deviation's own paragraph says it does not generalise.
+
 ## Input validation
 
 - Validate at the `api` boundary. `web` validation is UX; it is not a control.
-- Reject unknown fields rather than ignoring them.
 - Length caps on every string field, enforced in the schema and the database.
 - Clinical free text is stored raw and **escaped at render**. Sanitizing on input corrupts
   clinical content — "80% w/ min cues" must survive intact.
-- Uploads: content-type allow-list, size cap, extension and magic-byte check.
+- **Unknown fields are IGNORED, not rejected.** `System.Text.Json`'s default binds what it
+  recognises and drops the rest; no `JsonUnmappedMemberHandling.Disallow` is configured. This
+  line said the opposite. The exposure is small — every endpoint binds to a sealed record with
+  no extra settable members — and it is a real difference between what this file claimed and
+  what the code does.
+- **Uploads: not built.** No endpoint in `api` accepts a file. Document upload is sequenced
+  later (`CLAUDE.md` scope ledger); the content-type allow-list, size cap and magic-byte check
+  are its acceptance criteria, not a control that exists.
 
 ## Caching
 
-Authenticated responses: `Cache-Control: no-store`. Set at the `(app)` layout, not per-route —
-per-route means someone forgets. Asserted by a test hitting every authenticated route.
+Authenticated responses are **dynamically rendered**: `export const dynamic = "force-dynamic"`
+on the `(app)` layout, not per-route — per-route means someone forgets — which makes Next emit
+`private, no-cache, no-store, max-age=0, must-revalidate` rather than a cacheable default. **No
+`Cache-Control` header is set by hand**, and this section used to name one as though it were.
+
+Asserted by a test hitting every authenticated route — and *every* is accurate here: `no
+PHI-bearing route is cacheable` in `web/e2e/auth.spec.ts` **walks `app/(app)`** and derives the
+list from the directory, with a companion assertion that fails if the walk stops finding pages.
+A route added later arrives covered.
 
 **Ranked #1 in the threat model** as the most likely accidental disclosure.
 
@@ -183,21 +236,33 @@ browser chooses to keep it.
 
 **No PHI. Ever.**
 
-- Structured logs carry `ProviderId`, `PublicId`, correlation ID, event type, outcome.
-- Serilog destructuring policy redacts PHI-bearing types by default — an accidental
-  `logger.LogInformation("{@Patient}", patient)` emits redacted fields.
-- A test asserts that serializing every PHI-bearing entity produces no clinical values.
-- Exceptions: correlation ID to the user, full detail to Azure Monitor with PHI stripped.
+- Structured logs carry `ProviderId`, `PublicId`, correlation ID, event type, outcome — through
+  `Microsoft.Extensions.Logging` with source-generated `LoggerMessage` methods, whose parameters
+  are ids and reasons by construction.
+- **There is no Serilog in this repository.** No package reference in any `.csproj`, no sink, no
+  destructuring policy, and `Program.cs:34` says so where a previous version of this file's claim
+  had been copied into a comment. **Planned — WORK_QUEUE 4.1**: the redaction policy, plus a test
+  that serialises every PHI-bearing entity and asserts no clinical value appears. Until then the
+  control is that nothing logs an entity — a discipline, not a mechanism, and it is stated as one.
+- Exceptions: correlation ID (`traceId`) to the user through RFC 9457 problem details, with no
+  stack trace and no SQL text. **Azure Monitor is not wired** — no Application Insights or
+  OpenTelemetry package exists — so "full detail to Azure Monitor with PHI stripped" describes
+  the intended destination, not a shipped pipe.
 - **Build and CI logs are world-readable** (public repo) and treated accordingly.
 
 ## Audit
 
 Append-only `AuditEvent`. Application principal has **no `UPDATE` or `DELETE`** grant on it.
 
-Recorded: `PatientViewed`, `NoteSigned`, `NoteAmended`, `NoteDiscarded`, `AudioDeleted`,
-`LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `ExportGenerated`,
-`ConsultationRequestReceived`, `ConsultationNotificationFailed`,
-`ConsultationRequestViewed`, `ConsultationRequestUpdated`.
+**Emitted today:** `LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `MfaEnrolled`,
+`RecoveryCodeUsed`, `PatientViewed`, `PatientCreated`, `PatientUpdated`, `NoteSigned`,
+`NoteAmended`, `NoteDiscarded`, `ConsultationRequestReceived`,
+`ConsultationNotificationFailed`, `ConsultationRequestViewed`, `ConsultationRequestUpdated`.
+
+**Declared in `AuditEventType` and not yet written by anything:** `LoggedOut`, `AudioDeleted`
+(**planned — WORK_QUEUE 2.10**), `ExportGenerated`. The enum values exist so that historical
+rows can never be renumbered; listing them here as "recorded" made three events look like
+controls. **WORK_QUEUE 4.7** is the test that will hold this list to the code.
 
 **Reads are audited, not just writes.** Under HIPAA, access to ePHI is an auditable event; most
 homegrown systems log only writes and discover the gap during an investigation.
@@ -245,9 +310,26 @@ uncancellable write ran on past the request timeout and *added* to it, and the t
 stated worst case at all. Two things bound the exposure: every path that writes an audit row has
 already read from this database on the same request, so an audit write is never the query
 carrying a resume from auto-pause; and where two uncancellable writes compete for that one
-grace, the audit row is deliberately performed first (`ProviderAuthenticator` audits a failed
-login before incrementing its failure count, because a lost row leaves no evidence while a lost
-increment leaves countable rows).
+grace, the ORDER between them is chosen rather than incidental — see below.
+
+**An audit row is written at the earliest point at which the fact it asserts is already true,
+and not before.** That single rule puts the failure rows first and the success row last, which
+looks inconsistent and is the opposite of it.
+
+- **On a failure**, the fact is established the moment the credential check returns.
+  `ProviderAuthenticator` audits a failed login *before* incrementing its failure count,
+  because a lost row leaves no evidence — the response is deliberately indistinguishable from
+  every other refusal, so nothing else records the attempt — while a lost increment leaves
+  countable rows behind (D092).
+- **On a success, that argument inverts, and reading it as a general rule shipped a defect.**
+  With the users table stalled past the grace, `POST /auth/mfa/verify` answered **504 with no
+  session** and the audit table nevertheless held `LoginSucceeded`, with `LastMfaAtUtc` still
+  null. Nothing about a sign-in is a fact until the writes the session depends on have landed,
+  so a row written before them is a *prediction* — and `LoginSucceeded` is the row an
+  investigator uses to decide which sessions a breach has to be scoped to. A missing success
+  row can be reconstructed from what a session leaves behind; a false one is not falsifiable by
+  anything. `CompleteSignInAsync` therefore writes it **last**, so the row and the caller's
+  "you are signed in" fail together (D097).
 
 `RequestBoundsTests.The_security_document_names_the_token_audit_writes_run_on` reads the token
 out of `AuditWriter` and out of this paragraph and fails when they disagree, because the last
@@ -329,22 +411,33 @@ guardian rows carry opaque ids and fixed words only: no names, no numbers, no re
 
 ## Data retention
 
-| Data | Policy |
-|---|---|
-| Session audio | Deleted when the note is signed. **Hard 30-day cap** regardless. Deletion audited |
-| Transcript | Open — see `DATA_MODEL.md`. Leaning delete-with-audio |
-| Clinical notes | Retained. Maryland minors' floor **must be verified** (§15) |
-| Consultation requests | Retained while `New`/`Contacted`; purge policy needed for `Declined` |
-| Audit log | Retained. Never purged by the application |
-| Offline drafts | 24h TTL, purge on server ack |
+| Data | Policy | State |
+|---|---|---|
+| Session audio | Deleted when the note is signed. **Hard 30-day cap** regardless. Deletion audited | **Planned — WORK_QUEUE 2.10.** No audio is stored yet, so nothing is overdue; the policy is the acceptance criterion for that task |
+| Transcript | Open — see `DATA_MODEL.md`. Leaning delete-with-audio | Open |
+| Clinical notes | Retained. Maryland minors' floor **must be verified** (§15) | Retained; the floor is unverified |
+| Consultation requests | Retained while `New`/`Contacted`; purge policy needed for `Declined` | Retained; no purge exists |
+| Audit log | Retained. Never purged by the application | Built — the app principal has no `DELETE` on it |
+| Offline drafts | 24h TTL, purge on server ack | **Planned — Phase 2.** There is no offline draft store yet |
 
-**Deletion is verified, not assumed.** An alert fires on any audio past its deletion date,
-because a silently failing lifecycle job looks exactly like a working one.
+**Deletion is verified, not assumed** — that is the design, and the alert that makes it true is
+**planned — WORK_QUEUE 4.6**. Nothing today would notice audio past its deletion date, which is
+tolerable only because nothing stores audio yet. A silently failing lifecycle job looks exactly
+like a working one, so this row closes with 2.10 and 4.6 together or not at all.
 
 ## Dependencies
 
-Lockfiles committed · Dependabot on · pinned action SHAs · `pull_request_target` banned ·
-no secrets exposed to fork workflows.
+`pull_request_target` is **banned** and appears nowhere; no workflow exposes secrets to a fork
+(`permissions: contents: read` on CI, and deploy runs only on `main`). `web/package-lock.json`
+is committed.
+
+**Two claims here were false and are now the queue's problem rather than this page's:**
+
+| Claim | State |
+|---|---|
+| Dependabot on | **NOT BUILT.** There is no `.github/dependabot.yml`. Nothing watches either lockfile |
+| Pinned action SHAs | **NOT BUILT.** Every `uses:` in both workflows is a floating tag — `actions/checkout@v5`, `docker/build-push-action@v6`, `azure/login@v2`. A moved tag is a supply-chain write into a workflow holding a deploy identity (`THREAT_MODEL.md` ⑧) |
+| .NET lockfile | **NOT BUILT.** `RestorePackagesWithLockFile` is not set, so there is no `packages.lock.json` — "lockfiles committed" was true of `web` only |
 
 ## Backup and recovery
 

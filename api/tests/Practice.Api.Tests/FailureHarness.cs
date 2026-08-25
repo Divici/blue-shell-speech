@@ -485,6 +485,57 @@ internal sealed class DelaysEveryRead(TimeSpan delay) : DbCommandInterceptor
 }
 
 /// <summary>
+/// A bookkeeping seam that reports every write as having changed nothing.
+///
+/// STANDS IN FOR TWO REAL THINGS, neither of which a test can arrange on demand: the
+/// <c>DbUpdateConcurrencyException</c> that <c>UserStore.UpdateAsync</c> catches and returns
+/// as a failed <c>IdentityResult</c> — the mechanism behind eighty concurrent guesses
+/// counting as four — and a row that is gone by the time the statement reaches it.
+///
+/// The point is not the exotic cause. It is that the caller has to READ the answer: a login
+/// that refuses a credential without counting it toward the lockout has quietly stopped
+/// having a lockout, and the previous version of this path could not tell the difference.
+/// </summary>
+internal sealed class CountsNothing : ILoginBookkeeping
+{
+    public Task<bool> CountFailureAsync(string userId) => Task.FromResult(false);
+
+    public Task<bool> ClearFailuresAsync(string userId) => Task.FromResult(false);
+
+    public Task<bool> RecordMfaAsync(string userId, DateTime atUtc) => Task.FromResult(false);
+}
+
+/// <summary>
+/// A path inside the repository, found by walking up from the test assembly.
+///
+/// The build output sits several directories below the tree and the depth differs between a
+/// local run and CI, so walking up to the thing being asserted on is the version that
+/// encodes neither. Files AND directories, because two of the guards that use this walk a
+/// whole source tree rather than naming the files in it — which is the point of those
+/// guards (D090's "glob, do not enumerate").
+///
+/// Shared rather than copied, for the reason at the top of this file. Two test classes now
+/// assert on the source tree: one on the compliance documents, one on a call shape the
+/// compiler cannot see.
+/// </summary>
+internal static class RepoTree
+{
+    public static string File(string relativePath)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory);
+             dir is not null;
+             dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, relativePath);
+            if (System.IO.File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException(
+            $"Could not find {relativePath} above {AppContext.BaseDirectory}.");
+    }
+}
+
+/// <summary>
 /// Reads one instance property down the WHOLE inheritance chain, public or not.
 ///
 /// Two classes here need it and for the same reason: the value that decides a bound is

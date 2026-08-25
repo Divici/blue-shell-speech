@@ -627,26 +627,11 @@ public sealed class RequestBoundsTests(SqlServerFixture sql) : IDisposable
     /// <summary>
     /// A path inside the repository, found by walking up from the test assembly.
     ///
-    /// The build output sits several directories below the tree, and the depth differs
-    /// between a local run and CI. Walking up to the thing being asserted on is the version
-    /// that does not encode either.
-    ///
-    /// Files AND directories, because one of the guards above walks a whole source tree
-    /// rather than naming the files in it — which is the point of that guard.
+    /// Moved to <see cref="RepoTree"/> when a second class needed it — the copy is the one
+    /// nobody updates (FailureHarness.cs's opening argument). Kept as a name here because
+    /// three guards above read better with it.
     /// </summary>
-    private static string RepoFile(string relativePath)
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory);
-             dir is not null;
-             dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
-        }
-
-        throw new FileNotFoundException(
-            $"Could not find {relativePath} above {AppContext.BaseDirectory}.");
-    }
+    private static string RepoFile(string relativePath) => RepoTree.File(relativePath);
 
     /// <summary>
     /// The retry count and maximum backoff the CONFIGURED execution strategy holds.

@@ -136,6 +136,17 @@ public static class InfrastructureServices
             DatabaseTimeouts.Ceiling, DatabaseTimeouts.UncancellableGrace));
 
         services.AddScoped<IAuditWriter, AuditWriter>();
+
+        /*
+         * The login's own writes, off UserManager and onto single statements.
+         *
+         * UserManager's failure-count methods are read-modify-write behind an optimistic
+         * ConcurrencyStamp, and UserStore.UpdateAsync turns the resulting
+         * DbUpdateConcurrencyException into an IdentityResult rather than raising it — so
+         * concurrent wrong passwords counted as one and nothing anywhere went red. See
+         * ILoginBookkeeping for the statement and for the two alternatives that lost.
+         */
+        services.AddScoped<ILoginBookkeeping, LoginBookkeeping>();
         services.AddScoped<IProviderAuthenticator, ProviderAuthenticator>();
         services.AddScoped<IConsultationNotifier, LoggingConsultationNotifier>();
 
