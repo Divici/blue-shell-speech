@@ -375,6 +375,58 @@ return: every one is a form against an endpoint that already exists and is alrea
         goes red in BOTH directions: if the sentence is tidied away while the limiter is
         absent, and if the limiter lands while the sentence still says planned.
 
+- [ ] **1.20 Migrations are never applied to the deployed database** — **operational gap,
+      found when a live sign-in failed.** There is no migration step in
+      `.github/workflows/deploy.yml` and no `Database.Migrate()` in `Program.cs`; the only
+      `MigrateAsync()` calls in the repo are in `api/tests/.../SqlServerFixture.cs`. So every
+      builder ran `dotnet test` against Testcontainers — which DOES migrate — reported green,
+      and the live Azure SQL drifted further behind with each schema change. **12 migrations
+      accumulated undeployed.** Task 1.19 then shipped a rate limiter that writes to
+      `RateLimitCounters` **on the login path**, and every sign-in began throwing.
+      - Applied by hand on 2026-08-25 via `dotnet ef database update` with
+        `BLUESHELL_MIGRATIONS_CONNECTION`. That is the stopgap, not the fix.
+      - The real fix has decisions in it: migrating from a scale-to-zero container races
+        across replicas, a failed migration mid-deploy needs a defined outcome, and the
+        deploy identity needs DDL rights the app identity must NOT have. Consider a separate
+        migration job in `deploy.yml` gated before the container revision goes live, using
+        `dotnet ef migrations bundle` or an idempotent script.
+      - **Add a guard**: a commit containing a new migration must not be tickable until the
+        deployed database reports it applied. Record in `ORCHESTRATION.md` too.
+- [ ] **1.21 Fix five reviewer findings against `6573be4`** — **F1 is a complete MFA bypass
+      and is the most severe finding of the build. Not an active breach (synthetic data, not
+      live) but a hard blocker for go-live §34.**
+      - **F1 (SEVERE)** `BeginMfaEnrolmentAsync`
+        (`api/src/Practice.Infrastructure/Identity/ProviderAuthenticator.cs:239`) has **no
+        `GetTwoFactorEnabledAsync` guard**, so for an already-enrolled account it returns the
+        **existing** `AuthenticatorKey`. With only the password: POST `/login` → `mfa_required`
+        + pending-MFA cookie → navigate `/login/enrol` → `getSession()` is null and
+        `getPendingMfa()` is present, so `web/app/login/enrol/page.tsx` renders **the live TOTP
+        shared secret** at `EnrolForm.tsx:87`, and `completeEnrolment` mints **ten fresh
+        recovery codes**. The second factor is handed to whoever holds the first.
+        This also falsifies two rows written in that same commit — `docs/SECURITY.md:32`
+        ("regeneration after enrolment is not built") and `:36` ("nothing yet to gate") —
+        **"planned" written over a control that ships today.** Re-check every "planned" row
+        for the same inversion.
+      - **F2** The `LockedOut` branch is a deterministic enumeration oracle needing no clock:
+        `{"status":"locked_out","lockoutSeconds":900}` renders "Too many attempts…", so six
+        POSTs prove an account exists while a nonexistent one never changes its answer. That
+        branch also skips both cost centres the 3068ms/3061ms equalisation was built on —
+        **the equalisation covers two branches of five.**
+      - **F3** In `VerifyPasswordAsync`, `ClearFailuresAsync(user)` precedes
+        `audit.WriteAsync(… MfaChallenged …)` and both draw on the one shared deadline. A
+        write whose loss costs nothing can consume the whole grace, so a request in which the
+        **correct** password was accepted leaves no row anywhere. Inverts the rule that commit
+        codified.
+      - **F4** The `THEN 0` arm of the lockout `CASE` has **no control** — replace it with
+        `+ 1` and every test stays green, but `AccessFailedCount` stays at 20, so after the 15
+        minutes expire the next guess re-locks instantly. One request per quarter hour
+        permanently denies the practice's only account.
+      - **F5** `ExecuteSqlAsync` runs inside the retrying execution strategy and the new
+        predicate is `WHERE [Id] = @userId`, which matches on every retry — a connection drop
+        after commit but before the DONE token (10054/40613) **counts one wrong password
+        twice**. The old `AccessFailedAsync` was accidentally safe because its WHERE carried
+        the pre-update stamp.
+
 ## Phase 2 — Slice 6, dictation
 
 - [x] **2.1 PWA shell** — `manifest.ts`, icons, service worker, offline shell.
