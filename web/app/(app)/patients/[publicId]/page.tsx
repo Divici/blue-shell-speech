@@ -2,6 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { patientsApi, formatAge, type Guardian } from "@/lib/api/patients";
+import { goalsApi } from "@/lib/api/notes";
+import { utcToPracticeDate } from "@/lib/practice-time";
+import { GoalList } from "./GoalList";
+import { AddGoalForm } from "./AddGoalForm";
 
 export const metadata: Metadata = {
   title: "Patient",
@@ -20,7 +24,16 @@ export const metadata: Metadata = {
  */
 export default async function PatientPage(props: PageProps<"/patients/[publicId]">) {
   const { publicId } = await props.params;
-  const patient = await patientsApi.get(publicId);
+
+  /*
+   * Both in one round trip. The API answers 404 to the goals list for an unreachable
+   * patient exactly as it does for the record itself, so the worst case is an empty array
+   * that is never rendered — the notFound() below fires first.
+   */
+  const [patient, goals] = await Promise.all([
+    patientsApi.get(publicId),
+    goalsApi.list(publicId),
+  ]);
 
   if (!patient) notFound();
 
@@ -100,6 +113,29 @@ export default async function PatientPage(props: PageProps<"/patients/[publicId]
           </section>
         </aside>
       </div>
+
+      {/*
+        Treatment goals.
+
+        Placed directly under the clinical summary because they are the working part of the
+        record: they are what a session is planned against, and what the dictation pipeline
+        will classify observations against (presearch §5.4).
+      */}
+      <section className="mt-6 rounded-2xl border border-ice bg-white p-6">
+        <h2 className="font-display text-xl font-bold text-navy">Goals</h2>
+
+        <GoalList patientPublicId={patient.publicId} goals={goals} />
+
+        {/*
+          The start date is resolved HERE, on the server, in the practice's zone. Left to
+          the browser it would use the device clock, and left to the API it would use the
+          UTC date — which after an evening visit is already tomorrow (D057).
+        */}
+        <AddGoalForm
+          patientPublicId={patient.publicId}
+          defaultStartDate={utcToPracticeDate(new Date())}
+        />
+      </section>
 
       {patient.guardians.length > 1 && (
         <section className="mt-6 rounded-2xl border border-ice bg-white p-6">

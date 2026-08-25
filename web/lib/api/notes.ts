@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getSession } from "@/lib/auth/session";
+import type { GoalValue } from "@/lib/goal-schema";
 
 /**
  * Goals and clinical notes.
@@ -20,6 +21,12 @@ export interface Goal {
   endDate: string | null;
   aacModality: string | null;
   aacDeviceNotes: string | null;
+}
+
+/** What a met/discontinue call answers with. */
+export interface GoalTransition {
+  publicId: string;
+  status: Goal["status"];
 }
 
 export interface ClinicalNote {
@@ -85,28 +92,41 @@ export const goalsApi = {
       `/patients/${patientPublicId}/goals${activeOnly ? "?activeOnly=true" : ""}`,
     ).then((r) => r ?? []),
 
-  create: (
-    patientPublicId: string,
-    body: {
-      goalText: string;
-      domain: string;
-      targetCriteria: string | null;
-      cueLevelExpected: string | null;
-      aacModality: string | null;
-      aacDeviceNotes: string | null;
-    },
-  ) => request<{ publicId: string }>(`/patients/${patientPublicId}/goals`, {
-    method: "POST",
-    body: JSON.stringify({ ...body, startDate: null }),
-  }),
+  /**
+   * The start date is sent EXPLICITLY, never left to the API's default.
+   *
+   * That default is `DateOnly.FromDateTime(utcNow)`, and at 8pm Eastern the UTC date is
+   * already tomorrow. A goal written after an evening visit would be dated a day ahead —
+   * the same class of bug D057 fixed on the schedule, in a field nobody would think to
+   * check.
+   */
+  create: (patientPublicId: string, body: GoalValue) =>
+    request<{ publicId: string }>(`/patients/${patientPublicId}/goals`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
+  /*
+   * Typed, so that a 404 is distinguishable from a success.
+   *
+   * `request` maps 404 to null. Left as `unknown`, a goal belonging to another provider
+   * would be indistinguishable from one closed perfectly well, and the UI would report
+   * success for a write that never happened.
+   *
+   * There is deliberately NO delete here. Marking met and discontinuing are transitions:
+   * the row keeps its text and gains an end date, because a closed goal is the record of
+   * what therapy accomplished.
+   */
   markMet: (patientPublicId: string, goalPublicId: string) =>
-    request(`/patients/${patientPublicId}/goals/${goalPublicId}/met`, { method: "POST" }),
-
-  discontinue: (patientPublicId: string, goalPublicId: string) =>
-    request(`/patients/${patientPublicId}/goals/${goalPublicId}/discontinue`, {
+    request<GoalTransition>(`/patients/${patientPublicId}/goals/${goalPublicId}/met`, {
       method: "POST",
     }),
+
+  discontinue: (patientPublicId: string, goalPublicId: string) =>
+    request<GoalTransition>(
+      `/patients/${patientPublicId}/goals/${goalPublicId}/discontinue`,
+      { method: "POST" },
+    ),
 };
 
 export const notesApi = {
@@ -142,22 +162,10 @@ export const notesApi = {
     }),
 };
 
-/** Human labels for the domain enum. "Aac" reads badly; "AAC" is the term. */
-export const GOAL_DOMAIN_LABELS: Record<string, string> = {
-  Articulation: "Articulation",
-  ReceptiveLanguage: "Receptive language",
-  ExpressiveLanguage: "Expressive language",
-  SocialCommunication: "Social communication",
-  Fluency: "Fluency",
-  Feeding: "Feeding",
-  Aac: "AAC",
-};
-
-export const CUE_LEVEL_LABELS: Record<string, string> = {
-  Independent: "Independent",
-  Visual: "Visual cues",
-  Gestural: "Gestural cues",
-  Verbal: "Verbal cues",
-  Tactile: "Tactile cues",
-  HandOverHand: "Hand over hand",
-};
+/*
+ * The enum labels used to live here and now live in lib/goal-schema.ts.
+ *
+ * This module is `server-only`, so a client component importing a label from it would
+ * fail the build — and the goal form needs the same list the validator uses. One
+ * client-safe source keeps the picker from offering a value the API would reject.
+ */

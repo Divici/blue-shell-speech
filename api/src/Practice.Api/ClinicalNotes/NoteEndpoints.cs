@@ -53,14 +53,39 @@ public static class NoteEndpoints
         var query = db.Goals.AsNoTracking().Where(g => g.PatientId == patient.Id);
         if (activeOnly) query = query.Where(g => g.Status == GoalStatus.Active);
 
-        var results = await query
+        /*
+         * Projected to the columns in SQL, named in memory.
+         *
+         * Nullable<TEnum>.ToString() returns string.EMPTY, not null — so translating the
+         * whole projection into SQL turned "no cue level was specified" into "" and the
+         * DTO's own `string?` became a lie. A consumer checking for null then reads an
+         * empty string as a real value.
+         *
+         * The two-step keeps the column list narrow in the query and lets `?.ToString()`
+         * do the nullable-aware thing on the way out.
+         */
+        var rows = await query
             .OrderBy(g => g.Status).ThenByDescending(g => g.StartDate)
-            .Select(g => new GoalDto(
-                g.PublicId, g.GoalText, g.Domain.ToString(), g.TargetCriteria,
-                g.CueLevelExpected.ToString(), g.Status.ToString(),
-                g.StartDate, g.EndDate,
-                g.AacModality.ToString(), g.AacDeviceNotes))
+            .Select(g => new
+            {
+                g.PublicId,
+                g.GoalText,
+                g.Domain,
+                g.TargetCriteria,
+                g.CueLevelExpected,
+                g.Status,
+                g.StartDate,
+                g.EndDate,
+                g.AacModality,
+                g.AacDeviceNotes,
+            })
             .ToListAsync(ct);
+
+        var results = rows.Select(g => new GoalDto(
+            g.PublicId, g.GoalText, g.Domain.ToString(), g.TargetCriteria,
+            g.CueLevelExpected?.ToString(), g.Status.ToString(),
+            g.StartDate, g.EndDate,
+            g.AacModality?.ToString(), g.AacDeviceNotes)).ToList();
 
         return Results.Ok(results);
     }

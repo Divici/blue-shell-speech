@@ -29,7 +29,7 @@ return: every one is a form against an endpoint that already exists and is alrea
       Surface the 409 conflict message (including the travel-time case) as readable text.
 - [x] **1.2 Start-a-note entry point** — from a visit on `/today`, create or open its
       note. Currently `/notes/[publicId]` is reachable only by typing a URL.
-- [ ] **1.3 Goals UI** — list, add, mark met, discontinue, on a patient page. AAC fields
+- [x] **1.3 Goals UI** — list, add, mark met, discontinue, on a patient page. AAC fields
       appear only when the domain is AAC (the aggregate and a CHECK both enforce it).
 - [ ] **1.4 Guardian + address forms** — add/edit on a patient page. `HasLegalAuthority`
       must be its own explicit control, never inferred from primary contact.
@@ -156,6 +156,7 @@ Append one line per completed task: date, task id, commit sha.
 
 - 2026-08-25 · 1.1 appointment creation UI · practice-local to UTC conversion tested across both DST boundaries; 409 conflict surfaces the clashing visit time
 - 2026-08-24 · 1.2 start-a-note entry point · `DayVisit` carries the current note's id and status, resolved in the day query as one OUTER APPLY rather than a request per card; `startNote` server action creates the draft and treats the API's 409 as "open the one that exists", so a duplicate clinical record stays impossible outside the UI too
+- 2026-08-24 · 1.3 goals UI · the AAC fields are **unmounted** on a non-AAC domain rather than hidden, and the BFF refuses the combination rather than blanking it, so the form asks the same question the aggregate and `CK_Goals_AacFieldsOnlyOnAacGoals` ask; marking met and discontinuing are transitions with no delete anywhere in the chain, and closed goals stay on the page. Found while testing: the goals projection translated `Nullable<TEnum>.ToString()` into SQL and returned `""` where the DTO promised `null`, so "no cue level recorded" arrived as a value
 
 ---
 
