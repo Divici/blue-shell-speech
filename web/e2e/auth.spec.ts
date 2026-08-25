@@ -113,12 +113,20 @@ test.describe("unauthenticated access", () => {
 test.describe("patient routes are protected", () => {
   const routes = ["/dashboard", "/patients", "/patients/new", "/today"];
 
+  // A note is the most sensitive page in the app: clinical observations about a child.
+  const noteRoute = "/notes/11111111-1111-1111-1111-111111111111";
+
   for (const route of routes) {
     test(`${route} redirects to sign-in without a session`, async ({ page }) => {
       await page.goto(route);
       await expect(page).toHaveURL(/\/login$/);
     });
   }
+
+  test("a clinical note is unreachable without a session", async ({ page }) => {
+    await page.goto(noteRoute);
+    await expect(page).toHaveURL(/\/login$/);
+  });
 
   test("a patient record is unreachable without a session", async ({ page }) => {
     // A real-looking identifier must behave exactly like any other: redirect, reveal
