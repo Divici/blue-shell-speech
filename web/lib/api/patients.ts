@@ -1,6 +1,8 @@
 import "server-only";
 
 import { getSession } from "@/lib/auth/session";
+import type { GuardianValue } from "@/lib/guardian-schema";
+import type { AddressCorrectionValue, NewAddressValue } from "@/lib/address-schema";
 
 /**
  * Patient API client.
@@ -42,6 +44,13 @@ export interface PatientAddress {
   addressType: "Session" | "Billing";
   notes: string | null;
   isCurrent: boolean;
+  /**
+   * The record is VERSIONED: a move closes the previous row rather than overwriting it.
+   * These are what let the page say which address a visit last spring happened at —
+   * `isCurrent` alone cannot. Both are DateOnly (yyyy-mm-dd), never instants.
+   */
+  effectiveFrom: string;
+  effectiveTo: string | null;
 }
 
 export interface PatientDetail extends PatientSummary {
@@ -122,20 +131,52 @@ export const patientsApi = {
       body: JSON.stringify(body),
     }),
 
-  addGuardian: (
-    publicId: string,
-    body: {
-      firstName: string;
-      lastName: string;
-      relationship: string;
-      phone: string | null;
-      email: string | null;
-      isPrimaryContact: boolean;
-      hasLegalAuthority: boolean;
-    },
-  ) =>
+  /*
+   * GUARDIANS.
+   *
+   * `Required<GuardianValue>` on purpose: the schema leaves hasLegalAuthority UNDEFINED
+   * when nobody answered, and this signature refuses to compile with it missing. The API
+   * refuses a null of its own, so "nobody said" is stopped by the form, by the type, and
+   * by the endpoint — none of the three ever turns silence into a recorded decision about
+   * who may hold a child's medical file.
+   */
+  addGuardian: (publicId: string, body: Required<GuardianValue>) =>
     request<PatientDetail>(`/patients/${publicId}/guardians`, {
       method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateGuardian: (
+    publicId: string,
+    guardianPublicId: string,
+    body: Required<GuardianValue>,
+  ) =>
+    request<PatientDetail>(`/patients/${publicId}/guardians/${guardianPublicId}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  /*
+   * ADDRESSES — two calls, because they are two events.
+   *
+   * `addAddress` records a MOVE: the API closes the current address of that type and keeps
+   * it, because a note describing a visit last spring refers to where the family lived
+   * then. `correctAddress` fixes a TYPO in place, and its body cannot carry a type or a
+   * date — that absence is the guard, not a convention.
+   */
+  addAddress: (publicId: string, body: NewAddressValue) =>
+    request<PatientDetail>(`/patients/${publicId}/addresses`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  correctAddress: (
+    publicId: string,
+    addressPublicId: string,
+    body: AddressCorrectionValue,
+  ) =>
+    request<PatientDetail>(`/patients/${publicId}/addresses/${addressPublicId}`, {
+      method: "PUT",
       body: JSON.stringify(body),
     }),
 

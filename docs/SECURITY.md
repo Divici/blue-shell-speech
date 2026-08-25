@@ -179,8 +179,17 @@ Unhandled failures answer with RFC 9457 problem details and no stack trace
 exception page). An error body crosses the `web` → `api` boundary exactly like a log line, and
 the same rule applies: no SQL text, no parameter values, no PHI.
 
+**Guardian and address writes are audited**, as `PatientUpdated` against the patient's public
+id, with a fixed metadata vocabulary:
+`action=guardian-added|guardian-updated;guardian={publicId};legalAuthority=granted|withheld;primaryContact=yes|no`
+and `action=address-added|address-corrected;address={publicId};type=Session|Billing`.
+`HasLegalAuthority` gates who may receive a child's records, so "who was allowed, and when did
+that change" has to be answerable after the fact — a custody arrangement cannot be
+reconstructed from the current row. Adding a guardian previously wrote nothing (D073).
+
 `Metadata` never contains clinical content — the audit log is the table most likely to be
-exported or read by a third party, which multiplies the blast radius of anything in it.
+exported or read by a third party, which multiplies the blast radius of anything in it. The
+guardian rows carry opaque ids and fixed words only: no names, no numbers, no relationship.
 
 ## Data retention
 

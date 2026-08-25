@@ -6,6 +6,8 @@ import { goalsApi } from "@/lib/api/notes";
 import { utcToPracticeDate } from "@/lib/practice-time";
 import { GoalList } from "./GoalList";
 import { AddGoalForm } from "./AddGoalForm";
+import { GuardianSection } from "./GuardianSection";
+import { AddressSection } from "./AddressSection";
 
 export const metadata: Metadata = {
   title: "Patient",
@@ -80,13 +82,27 @@ export default async function PatientPage(props: PageProps<"/patients/[publicId]
           )}
         </section>
 
+        {/*
+          The at-a-glance panel: who to call, and where to drive.
+
+          It duplicates two facts from the sections further down, and earns it — this is
+          what the page is opened for between houses, on a phone, and scrolling past two
+          editable sections to find a phone number is not that. The editing lives below;
+          this is the reading copy.
+        */}
         <aside className="space-y-6">
           <section className="rounded-2xl border border-ice bg-white p-6">
             <h2 className="font-display text-lg font-bold text-navy">Contact</h2>
             {primary ? (
               <GuardianCard guardian={primary} />
             ) : (
-              <p className="mt-3 text-sm text-ink-muted">No primary contact yet.</p>
+              <p className="mt-3 text-sm text-ink-muted">
+                No primary contact yet.{" "}
+                <a href="#guardians" className="text-blue-deep hover:underline">
+                  Add a guardian
+                </a>
+                .
+              </p>
             )}
           </section>
 
@@ -108,7 +124,13 @@ export default async function PatientPage(props: PageProps<"/patients/[publicId]
                 )}
               </address>
             ) : (
-              <p className="mt-3 text-sm text-ink-muted">No address on file.</p>
+              <p className="mt-3 text-sm text-ink-muted">
+                No address on file.{" "}
+                <a href="#addresses" className="text-blue-deep hover:underline">
+                  Add one
+                </a>
+                .
+              </p>
             )}
           </section>
         </aside>
@@ -137,20 +159,21 @@ export default async function PatientPage(props: PageProps<"/patients/[publicId]
         />
       </section>
 
-      {patient.guardians.length > 1 && (
-        <section className="mt-6 rounded-2xl border border-ice bg-white p-6">
-          <h2 className="font-display text-lg font-bold text-navy">Other guardians</h2>
-          <ul className="mt-3 grid gap-4 sm:grid-cols-2">
-            {patient.guardians
-              .filter((g) => !g.isPrimaryContact)
-              .map((guardian) => (
-                <li key={guardian.publicId}>
-                  <GuardianCard guardian={guardian} />
-                </li>
-              ))}
-          </ul>
-        </section>
-      )}
+      <GuardianSection
+        patientPublicId={patient.publicId}
+        guardians={patient.guardians}
+      />
+
+      {/*
+        The move-in date defaults to TODAY IN THE PRACTICE'S ZONE, resolved here on the
+        server. Left to the browser it would use the device clock; left to the API it would
+        use the UTC date, which after an evening visit is already tomorrow (D057).
+      */}
+      <AddressSection
+        patientPublicId={patient.publicId}
+        addresses={patient.addresses}
+        defaultEffectiveFrom={utcToPracticeDate(new Date())}
+      />
     </>
   );
 }

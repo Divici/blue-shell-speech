@@ -158,6 +158,68 @@ public sealed class Patient : Entity
         return guardian;
     }
 
+    /// <summary>
+    /// Edits a guardian already on this record. Null means there is no such guardian here —
+    /// which the API turns into the same 404 an unreachable patient produces (D052).
+    ///
+    /// On the root rather than on Guardian because promoting one demotes another, and that
+    /// invariant spans every guardian on the patient.
+    ///
+    /// <b>Legal authority is set from its own argument and from nothing else.</b> It is not
+    /// implied by becoming the primary contact and it is not withdrawn by ceasing to be
+    /// one. A stepparent can be the contact with no authority to consent; a non-custodial
+    /// parent can hold authority without being the contact. Releasing a record to the wrong
+    /// adult is a breach, so the two questions stay separate all the way down.
+    /// </summary>
+    public Guardian? UpdateGuardian(
+        Guid guardianPublicId,
+        string firstName,
+        string lastName,
+        string relationship,
+        string? phone,
+        string? email,
+        bool isPrimaryContact,
+        bool hasLegalAuthority)
+    {
+        var guardian = _guardians.SingleOrDefault(g => g.PublicId == guardianPublicId);
+        if (guardian is null) return null;
+
+        guardian.Rename(firstName, lastName);
+        guardian.ChangeRelationship(relationship);
+
+        /*
+         * THE ORDER HERE IS LOAD-BEARING, in both directions.
+         *
+         * Demotion happens BEFORE the contact details change, so a guardian who is no
+         * longer the person Michelle calls may have their number cleared — the rule is
+         * about the role, not the person.
+         *
+         * Promotion happens AFTER, so MakePrimaryContact judges the details being SAVED
+         * rather than the ones being replaced. Reversed, adding a phone number to a
+         * guardian at the moment of promoting them would be refused for having none.
+         */
+        if (!isPrimaryContact)
+        {
+            guardian.ClearPrimaryContact();
+        }
+
+        guardian.UpdateContact(phone, email);
+
+        if (isPrimaryContact)
+        {
+            foreach (var existing in _guardians)
+            {
+                if (!ReferenceEquals(existing, guardian)) existing.ClearPrimaryContact();
+            }
+
+            guardian.MakePrimaryContact();
+        }
+
+        guardian.SetLegalAuthority(hasLegalAuthority);
+
+        return guardian;
+    }
+
     public PatientAddress AddAddress(
         string line1,
         string? line2,
@@ -178,6 +240,35 @@ public sealed class Patient : Entity
         }
 
         _addresses.Add(address);
+        return address;
+    }
+
+    /// <summary>
+    /// Fixes an address that was typed wrong. Null means there is no such address here.
+    ///
+    /// The counterpart to AddAddress, and the distinction is the whole point: AddAddress
+    /// says <i>they live somewhere else now</i> and closes the previous row; this says
+    /// <i>we wrote it down wrong</i> and touches one row in place. Using AddAddress for a
+    /// typo would leave the mistyped address on the record as somewhere the family used to
+    /// live; using this for a move would erase where they lived when last year's visits
+    /// happened.
+    ///
+    /// Works on a superseded row too — a typo in an old address is still a typo — and
+    /// leaves it superseded, because Correct writes neither EffectiveFrom nor EffectiveTo.
+    /// </summary>
+    public PatientAddress? CorrectAddress(
+        Guid addressPublicId,
+        string line1,
+        string? line2,
+        string city,
+        string state,
+        string postalCode,
+        string? notes)
+    {
+        var address = _addresses.SingleOrDefault(a => a.PublicId == addressPublicId);
+        if (address is null) return null;
+
+        address.Correct(line1, line2, city, state, postalCode, notes);
         return address;
     }
 }

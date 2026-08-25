@@ -82,9 +82,28 @@ public sealed class Guardian : Entity
         return guardian;
     }
 
-    public void ClearPrimaryContact() => IsPrimaryContact = false;
+    /// <summary>People marry, and a relationship on a record can simply be wrong.</summary>
+    public void Rename(string firstName, string lastName)
+    {
+        FirstName = Guard.MaxLength(Guard.NotBlank(firstName, "firstName"), 100, "firstName");
+        LastName = Guard.MaxLength(Guard.NotBlank(lastName, "lastName"), 100, "lastName");
+    }
 
-    public void MakePrimaryContact()
+    public void ChangeRelationship(string relationship) =>
+        Relationship = Guard.MaxLength(
+            Guard.NotBlank(relationship, "relationship"), 50, "relationship");
+
+    /*
+     * INTERNAL, not public.
+     *
+     * "Exactly one primary contact" spans every guardian on the patient, so only the root
+     * can hold it — a caller who could promote a guardian directly would leave two primary
+     * numbers on the record and discover it as a unique-index violation. Patient.AddGuardian
+     * and Patient.UpdateGuardian are the only two callers, and both demote the others first.
+     */
+    internal void ClearPrimaryContact() => IsPrimaryContact = false;
+
+    internal void MakePrimaryContact()
     {
         if (Phone is null && Email is null)
         {
@@ -110,6 +129,14 @@ public sealed class Guardian : Entity
         Email = newEmail;
     }
 
+    /// <summary>
+    /// Grants or withdraws the right to receive this child's records.
+    ///
+    /// Takes the answer as an argument and derives it from nothing. It is deliberately NOT
+    /// a side effect of MakePrimaryContact, and MakePrimaryContact is deliberately not a
+    /// side effect of it: the two roles are decided by different facts about a family, and
+    /// a UI or a caller that conflated them would release a record to the wrong adult.
+    /// </summary>
     public void SetLegalAuthority(bool hasAuthority) => HasLegalAuthority = hasAuthority;
 
     private static string? Normalise(string? value, int max)

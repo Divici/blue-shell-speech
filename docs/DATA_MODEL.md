@@ -96,6 +96,20 @@ often than not, and one of them is frequently the one who actually answers the p
 child is not always the adult entitled to the record. Custody disputes are not an edge case in
 paediatrics, and a record released to the wrong parent is a breach.
 
+**It is never defaulted and never inferred.** The column is a `bit` and has no room for
+"nobody said", so the distinction lives on the way in: the form is a required radio group with
+nothing preselected, `AddGuardianRequest.HasLegalAuthority` is `bool?` and a null is a 400,
+and `Patient.UpdateGuardian` reads it from its own argument. Every stored `false` is therefore
+a `false` somebody chose, not a form's silence. See D073.
+
+**A patient with guardians but no authorised one is a real state**, not an error — a family
+whose custody paperwork has not arrived. The page says so (`recordsReleaseState`) rather than
+picking somebody, and states the answer on every guardian in both directions.
+
+Editing goes through `PUT /patients/{id}/guardians/{guardianId}`, on the aggregate rather than
+on the entity, because promoting one guardian demotes another. Guardian writes are audited as
+`PatientUpdated` with fixed-vocabulary metadata carrying opaque ids only.
+
 ### Address
 
 Own table. A patient can have a session address that differs from the billing address, and
@@ -111,6 +125,19 @@ addresses change.
 | `EffectiveFromUtc` / `EffectiveToUtc` | `datetime2(3)` | Nullable end = current |
 
 **Never sent to a mapping provider** without an evaluated data flow (§5.6).
+
+**A correction is not a move, and they are two operations** (D074). `POST .../addresses`
+records a move: `Patient.AddAddress` closes the current address of that type as of the new
+start date and keeps the row, because a note describing a visit last spring refers to where
+the family lived then. `PUT .../addresses/{addressId}` fixes a typo: `Patient.CorrectAddress`
+changes one row in place, and `CorrectAddressRequest` carries **no `AddressType` and no
+dates** — that absence is the guard, so a correction cannot supersede anything or turn a
+session address into a second current billing one. Correcting a superseded address is allowed
+and leaves it superseded.
+
+`AddressDto` exposes `EffectiveFrom` and `EffectiveTo`. `IsCurrent` alone cannot answer which
+address a past visit happened at, and the page has to show that for the versioning to mean
+anything.
 
 ### Goal
 
