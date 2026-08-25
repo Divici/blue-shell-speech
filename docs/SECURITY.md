@@ -157,9 +157,27 @@ returns full S/O/A/P for every version; that endpoint writes `PatientViewed` and
 versions were disclosed. A sibling endpoint that audits correctly but is never called is a
 control on paper.
 
-`NoteDiscarded` covers the one delete this application performs: an unsigned draft with nothing
-written in any section (`ClinicalNote.CanBeDiscarded`). Anything else is refused by the API, by
-the aggregate, and by `TR_ClinicalNotes_PreventDeletingRealNotes`.
+`NoteDiscarded` covers the one delete this application performs: an unsigned, unsuperseding
+draft with nothing written in any section (`ClinicalNote.CanBeDiscarded`). Anything else is
+refused by the API, by the aggregate, and by `TR_ClinicalNotes_PreventDeletingRealNotes` —
+**an amendment included**, whatever it holds, because deleting one leaves the visit with no
+current note and the signed version it supersedes reachable by nothing the product renders.
+
+**The delete and its audit row are one transaction.** They were two saves on the request's
+cancellation token, so backgrounding the app mid-request removed the row and abandoned the
+record of it. The only explicit transaction in the API is here, for that reason (D071).
+
+**Refused deletes are audited too**, as `NoteDiscarded` with `AuditOutcome.Failure` and a
+fixed-vocabulary reason: `not-found`, `amendment`, `has-content`, `signed`. A log holding only
+the deletions that succeeded cannot answer "did someone walk the note ids with DELETE", which
+is the question it exists for. The `not-found` rows are the ones that answer it — the response
+deliberately cannot distinguish "not yours" from "does not exist" (404 either way), so the
+audit table is the only place the attempt is recorded at all.
+
+Unhandled failures answer with RFC 9457 problem details and no stack trace
+(`AddProblemDetails` + `UseExceptionHandler`, registered before the automatic developer
+exception page). An error body crosses the `web` → `api` boundary exactly like a log line, and
+the same rule applies: no SQL text, no parameter values, no PHI.
 
 `Metadata` never contains clinical content — the audit log is the table most likely to be
 exported or read by a third party, which multiplies the blast radius of anything in it.

@@ -462,6 +462,86 @@ public sealed class SchedulingTests(SqlServerFixture sql) : IDisposable
         Assert.Equal(herVisit, Assert.Single(day.Visits).PublicId);
     }
 
+    // ------------------------------------------------- what goes over the wire
+
+    /// <summary>
+    /// Every instant this API serialises ends in Z.
+    ///
+    /// ASSERTED ON THE RAW BODY, not on a deserialised DTO, because that is the only place
+    /// the defect is visible. `DateTime` swallows the difference on the way in — a value
+    /// with no designator parses perfectly well as Unspecified — so a test that reads the
+    /// response into DayVisit and compares timestamps passes either way. The bug lives in
+    /// the six characters between the serialiser and the browser.
+    ///
+    /// What it cost while it was there: SQL Server's datetime2 carries no offset, so every
+    /// DateTime read back from the database had Kind Unspecified, and System.Text.Json
+    /// writes those with no suffix. `new Date("2026-06-10T13:00:00")` in the BFF is then
+    /// LOCAL time. Under America/New_York a 9am visit reads as not yet started until 1pm,
+    /// so the card that offers to document it stays a sentence explaining why it will not
+    /// — for four hours, with no override, on the screen the whole day is run from.
+    ///
+    /// The same field arrived BOTH ways depending on the route: POST /appointments echoes
+    /// an in-memory entity and carried the Z, GET /appointments/day did not. A contract
+    /// that holds on one path and not another is worse than one that is wrong everywhere,
+    /// because the first payload anyone inspects looks correct.
+    ///
+    /// Matched on the *Utc naming convention rather than a fixed field list, so a DTO
+    /// added later is covered on the day it is written.
+    ///
+    /// Control: PracticeDbContext.OnModelCreating — the UTC value converter.
+    /// Deleted → red on "startUtc … 2026-06-10T13:00:00", with no Z.
+    /// </summary>
+    [Fact]
+    public async Task Every_timestamp_the_api_serialises_is_marked_utc()
+    {
+        using var client = ClientFor(await SeedProviderAsync("Michelle"));
+        var patient = await CreatePatientAsync(client);
+
+        using var scheduled = await client.PostAsJsonAsync("/appointments",
+            Visit(patient, Utc(2026, 6, 10, 13, 0)));
+        scheduled.EnsureSuccessStatusCode();
+
+        foreach (var path in new[]
+                 {
+                     "/appointments/day/2026-06-10",
+                     // Explicit window: the list defaults to the month around now, which
+                     // this fixture's date is deliberately outside of.
+                     "/appointments?fromUtc=2026-06-01T00:00:00Z&toUtc=2026-07-01T00:00:00Z",
+                 })
+        {
+            using var response = await client.GetAsync(path);
+            response.EnsureSuccessStatusCode();
+
+            AssertEveryUtcFieldEndsWithZ(await response.Content.ReadAsStringAsync(), path);
+        }
+
+        // And the POST's own echo, which was already correct and must stay that way.
+        AssertEveryUtcFieldEndsWithZ(
+            await scheduled.Content.ReadAsStringAsync(), "POST /appointments");
+    }
+
+    /// <summary>
+    /// Every JSON string property whose name ends in "Utc" carries the designator.
+    ///
+    /// Shared by the scheduling and clinical-note suites: both read timestamps off the
+    /// same serialiser, and both broke in the same way.
+    /// </summary>
+    internal static void AssertEveryUtcFieldEndsWithZ(string payload, string what)
+    {
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            payload, "\"(?<name>[A-Za-z]*[Uu]tc)\"\\s*:\\s*\"(?<value>[^\"]+)\"");
+
+        Assert.NotEmpty(matches);
+
+        foreach (System.Text.RegularExpressions.Match match in matches)
+        {
+            Assert.True(
+                match.Groups["value"].Value.EndsWith('Z'),
+                $"{what}: {match.Groups["name"].Value} was serialised as " +
+                $"\"{match.Groups["value"].Value}\", which a browser reads as local time.");
+        }
+    }
+
     /// <summary>
     /// Writes a clinical note owned by one provider onto another provider's visit.
     ///

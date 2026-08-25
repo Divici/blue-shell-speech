@@ -5,6 +5,43 @@ From `presearch.md` §20. TDD per `~/.claude/rules/tdd.md`: red → green → re
 **Meaningful tests, not coverage theatre.** No coverage percentage is a target. The question is
 always "would this test have caught a real defect," not "is this line executed."
 
+---
+
+## The control-deletion protocol
+
+**A test that names a control must fail when that control is deleted. Find out by deleting it
+and running the test — not by reading the assertion and agreeing with yourself.**
+
+Five tests in this codebase have claimed a control in their comment and asserted something
+weaker (D042 #2, D061, D066 F3 and F4, D070). Every one was green. Green is not the signal;
+*going red on demand* is.
+
+For every test written or changed:
+
+1. Delete the control it names — the clause, the filter, the middleware registration, the line.
+2. Run the test. Read the failure message.
+3. Restore the control.
+4. Write what you read into the test's docstring, on a `Control:` line:
+
+       /// Control: ClinicalNote.CanBeDiscarded — the SupersedesNoteId clause.
+       /// Deleted → red on the final assertion, "Assert.False() Failure — Expected: False,
+       /// Actual: True".
+
+That line is **evidence the deletion happened**: the message cannot be written without
+running it. It is also greppable, so a test asserting a control without one is a reviewable
+omission rather than something nobody notices.
+
+If deleting the control leaves the test green, one of two things is true and both are worth
+knowing before an incident rather than during one: the assertion is aimed somewhere else, or
+a second control is quietly covering for the first. Both usually mean the honest test case is
+unreachable through the API and has to be constructed directly — see D066 for two worked
+examples.
+
+**Deliberately not automated.** A mutation harness in CI would gate the build on a score,
+which is the coverage-threshold failure mode this file rejects, and CLAUDE.md keeps quality
+signals of this kind out of CI. A hook or a lint rule can only check that the sentence exists
+— which is exactly what was already there and already wrong. The reasoning is in D070.
+
 **Exempt from TDD** (that rule's own non-behavioral clause): visual iteration inside a gauntlet
 round, and AI output quality — which lives in the eval suite and does not gate CI.
 

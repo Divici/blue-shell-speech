@@ -302,12 +302,22 @@ public sealed class ClinicalNoteTests
     }
 
     /// <summary>
-    /// The chain the predicate relies on, asserted rather than assumed.
+    /// An amendment is a correction to a signed record, and never discardable — INCLUDING
+    /// after every section has been cleared.
     ///
-    /// CanBeDiscarded does not test SupersedesNoteId. It does not need to: Amend() starts
-    /// the next version as a copy of a signed one, and Sign() refuses an empty note, so no
-    /// amendment can ever be empty. If either of those two rules is ever relaxed, this
-    /// test fails and the predicate needs the extra clause.
+    /// The earlier version of this test asserted only on a freshly created amendment,
+    /// whose content is still the copy Amend() made, so it passed on the emptiness clause
+    /// alone and could not see whether SupersedesNoteId was examined at all. Clearing the
+    /// sections first is what makes the claim in the name the claim being tested — the
+    /// D066 defect, in the commit that established D066.
+    ///
+    /// Its docstring was false as well: it argued no amendment can ever be empty, because
+    /// Sign() refuses an empty note. Sign() has nothing to do with it. An amendment is a
+    /// Draft, UpdateContent edits drafts freely, and blanking one is a supported call.
+    ///
+    /// Control: ClinicalNote.CanBeDiscarded — the SupersedesNoteId clause.
+    /// Deleted → red on the final assertion, "Assert.False() Failure — Expected: False,
+    /// Actual: True".
     /// </summary>
     [Fact]
     public void An_amendment_is_never_discardable()
@@ -316,6 +326,20 @@ public sealed class ClinicalNoteTests
 
         Assert.Equal(NoteStatus.Draft, amendment.Status);
         Assert.NotNull(amendment.AmendmentReason);
+        Assert.NotNull(amendment.SupersedesNoteId);
+        Assert.False(amendment.CanBeDiscarded);
+
+        /*
+         * The state the discard path can actually reach.
+         *
+         * PUT /notes/{amendment} with four empty strings is an ordinary edit of an
+         * ordinary draft — nothing refuses it, and nothing should. What must not follow is
+         * a DELETE, because the version this one supersedes is already Amended and
+         * IsCurrent = 0: removing the amendment leaves the visit with no current note and
+         * a signed record nothing links to.
+         */
+        amendment.UpdateContent("", "", "", "");
+
         Assert.False(amendment.CanBeDiscarded);
     }
 

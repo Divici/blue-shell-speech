@@ -351,29 +351,108 @@ public static class NoteEndpoints
         if (provider.ProviderId is null) return Results.Unauthorized();
 
         var note = await db.ClinicalNotes.SingleOrDefaultAsync(n => n.PublicId == publicId, ct);
-        if (note is null) return Results.NotFound();
+
+        if (note is null)
+        {
+            /*
+             * A DELETE that finds nothing is still an attempt to delete something.
+             *
+             * This is the row that answers "did somebody walk the note ids with DELETE".
+             * The response stays byte-identical to every other 404 — a note belonging to
+             * another provider and one that never existed must remain indistinguishable
+             * (D052) — so the audit table is the only place the attempt can be recorded
+             * at all. The id written down is one the caller already held.
+             */
+            await AuditRefusedDiscardAsync(audit, provider, publicId, "not-found", ct);
+            return Results.NotFound();
+        }
+
+        /*
+         * An amendment, asked about HERE as well as in the aggregate.
+         *
+         * Not a duplicate of CanBeDiscarded's clause — a restatement, on the D064
+         * principle that this rule is written three times so no single loosening removes
+         * it. It also has to come FIRST: a cleared amendment is a Draft with four empty
+         * sections, so the Draft branch below would tell a clinician the note "has
+         * something written in it" and ask her to clear sections that are already clear.
+         *
+         * The sequence it closes: sign v1, amend it, empty the amendment, delete it.
+         * Every call supported, and the result was a visit with no current note and a
+         * signed record nothing linked to.
+         */
+        if (note.SupersedesNoteId is not null)
+        {
+            await AuditRefusedDiscardAsync(audit, provider, publicId, "amendment", ct);
+
+            return Results.Conflict(new
+            {
+                message = "This is an amendment to a signed note, so it is kept. Discarding it would leave the visit with no current note while the signed version stays on file — correct this one and sign it instead.",
+            });
+        }
 
         if (!note.CanBeDiscarded)
         {
+            var draft = note.Status == NoteStatus.Draft;
+            await AuditRefusedDiscardAsync(
+                audit, provider, publicId, draft ? "has-content" : "signed", ct);
+
             // Two reasons, two sentences. "That is not allowed" tells a clinician nothing
             // about which rule she met.
             return Results.Conflict(new
             {
-                message = note.Status == NoteStatus.Draft
+                message = draft
                     ? "This note has something written in it, so it is kept. Clear the sections and save if you meant to start again."
                     : "This note is signed. A signed clinical record is never deleted — amend it instead.",
             });
         }
 
+        /*
+         * THE DELETE AND ITS AUDIT ROW COMMIT TOGETHER, OR NEITHER DOES.
+         *
+         * They used to be two SaveChangesAsync calls on the request's cancellation token.
+         * Backgrounding the PWA mid-request — walking out of a house, taking a call —
+         * cancelled the second one, and the row was already gone with nothing in
+         * AuditEvents naming who removed it. An audit trail with a survivorship bias
+         * toward requests that were not interrupted is not an audit trail.
+         *
+         * This is the FIRST explicit transaction in the API, and it is here rather than
+         * everywhere because this is the only place a row leaves a clinical table. The
+         * other multi-write endpoint that needs atomicity — AmendNote — gets it from EF
+         * putting one SaveChanges in one implicit transaction. That does not work here:
+         * IAuditWriter owns its own save, deliberately, so that an audit row is never
+         * silently batched in with whatever else the caller happened to be tracking.
+         *
+         * Wrapped in the execution strategy because the connection retries on transient
+         * failure (AddInfrastructure), and a retrying strategy refuses a user-initiated
+         * transaction it did not open — it has to own the retry boundary, otherwise a
+         * retry would resume inside a transaction that no longer exists.
+         */
         var version = note.VersionNumber;
-        db.ClinicalNotes.Remove(note);
-        await db.SaveChangesAsync(ct);
+        var strategy = db.Database.CreateExecutionStrategy();
 
-        await audit.WriteAsync(AuditEvent.Record(
-            AuditEventType.NoteDiscarded, AuditOutcome.Success,
-            providerId: provider.ProviderId,
-            entityType: nameof(ClinicalNote), entityPublicId: publicId,
-            metadata: $"version={version}"), ct);
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+            db.ClinicalNotes.Remove(note);
+            await db.SaveChangesAsync(ct);
+
+            await audit.WriteAsync(AuditEvent.Record(
+                AuditEventType.NoteDiscarded, AuditOutcome.Success,
+                providerId: provider.ProviderId,
+                entityType: nameof(ClinicalNote), entityPublicId: publicId,
+                metadata: $"version={version}"), ct);
+
+            /*
+             * Committed on CancellationToken.None, alone in this method.
+             *
+             * Everything above is abandonable: if the request goes away, the transaction
+             * disposes without committing and nothing happened. Once both writes are
+             * staged the decision is made, and abandoning the commit is the one action
+             * that could still leave the pair half-applied.
+             */
+            await transaction.CommitAsync(CancellationToken.None);
+        });
 
         /*
          * A body, not 204.
@@ -384,6 +463,37 @@ public static class NoteEndpoints
          */
         return Results.Ok(new { PublicId = publicId });
     }
+
+    /// <summary>
+    /// Records a discard that was REFUSED.
+    ///
+    /// The log used to hold only the deletions that succeeded, which makes it useless for
+    /// the question anyone actually brings to it: did someone try to remove records they
+    /// were not allowed to remove. A refusal is the more interesting row of the two — a
+    /// successful discard is an empty draft nobody will miss, and a refused one is an
+    /// attempt on a clinical record.
+    ///
+    /// <paramref name="reason"/> is a fixed vocabulary — not-found, amendment, has-content,
+    /// signed — so the table can be counted by reason rather than read as prose. It is
+    /// deliberately NOT the sentence returned to the caller: that wording is written for a
+    /// clinician and will be rewritten, and an audit row that changes shape when the copy
+    /// changes cannot be queried across a year.
+    ///
+    /// Nothing here is clinical content. The note's own public id is a value the caller
+    /// supplied, and "has-content" says a section was non-empty without saying what was in
+    /// it (docs/SECURITY.md §Audit).
+    /// </summary>
+    private static Task AuditRefusedDiscardAsync(
+        IAuditWriter audit,
+        IProviderContext provider,
+        Guid publicId,
+        string reason,
+        CancellationToken ct) =>
+        audit.WriteAsync(AuditEvent.Record(
+            AuditEventType.NoteDiscarded, AuditOutcome.Failure,
+            providerId: provider.ProviderId,
+            entityType: nameof(ClinicalNote), entityPublicId: publicId,
+            metadata: $"refused;reason={reason}"), ct);
 
     private static async Task<IResult> SignNote(
         Guid publicId,
@@ -485,16 +595,27 @@ public sealed record CreateGoalRequest(
     string GoalText, GoalDomain Domain, DateOnly? StartDate, string? TargetCriteria,
     CueLevel? CueLevelExpected, AacModality? AacModality, string? AacDeviceNotes);
 
+/// <summary>
+/// A note as the UI sees it.
+///
+/// <see cref="IsAmendment"/> is a BOOLEAN, not the id it derives from. The screen needs to
+/// know whether this row supersedes a signed version — it must not offer to discard one —
+/// and SupersedesNoteId is a clustered key that never leaves the server (Entity). Deriving
+/// it here means the client asks the same question the aggregate, the endpoint, and the
+/// trigger ask, rather than inferring it from VersionNumber and hoping the two stay in
+/// step (the precedent D062 set for the AAC fields).
+/// </summary>
 public sealed record NoteDto(
     Guid PublicId, int VersionNumber, bool IsCurrent, string Status,
     string Subjective, string Objective, string Assessment, string Plan,
     string Origin, DateTime? SignedAtUtc, string? SignedBy, string? AmendmentReason,
-    bool IntegrityVerified)
+    bool IsAmendment, bool IntegrityVerified)
 {
     public static NoteDto From(ClinicalNote note) => new(
         note.PublicId, note.VersionNumber, note.IsCurrent, note.Status.ToString(),
         note.Subjective, note.Objective, note.Assessment, note.Plan,
         note.Origin.ToString(), note.SignedAtUtc, note.SignedBy, note.AmendmentReason,
+        note.SupersedesNoteId is not null,
         note.VerifyIntegrity());
 }
 

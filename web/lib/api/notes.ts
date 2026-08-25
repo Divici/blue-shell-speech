@@ -42,6 +42,8 @@ export interface ClinicalNote {
   signedAtUtc: string | null;
   signedBy: string | null;
   amendmentReason: string | null;
+  /** True when this version supersedes a signed one. Never discardable, whatever it holds. */
+  isAmendment: boolean;
   /** False means the stored hash no longer matches the content — tampering. */
   integrityVerified: boolean;
 }

@@ -34,6 +34,7 @@ const EMPTY_DRAFT: ClinicalNote = {
   signedAtUtc: null,
   signedBy: null,
   amendmentReason: null,
+  isAmendment: false,
   integrityVerified: true,
 };
 
@@ -91,6 +92,34 @@ describe("NoteEditor discard control", () => {
           subjective: "Mum reports steady progress.",
           signedAtUtc: "2026-06-15T20:00:00Z",
           signedBy: "Michelle",
+        })}
+      />,
+    );
+
+    expect(discardControl()).not.toBeInTheDocument();
+  });
+
+  /**
+   * An amendment is a draft, and clearing it is an ordinary edit — so every emptiness
+   * question this control asks is satisfied, and the screen used to offer "Discard this
+   * empty note" on the one row that must never be discarded.
+   *
+   * That is worse than a control the API happens to refuse. The copy claims nothing has
+   * been saved in the note, which is false: a signed version sits underneath it, already
+   * marked Amended with IsCurrent = 0. Offering the tap leads a clinician to a refusal she
+   * had no reason to expect, on a screen that told her the opposite.
+   *
+   * Control: NoteEditor.isEmptyNote — the `!note.isAmendment` clause.
+   * Deleted → red on `expect(discardControl()).not.toBeInTheDocument()`, "expected null
+   * not to be in the document" inverted: the button is found.
+   */
+  it("is absent on a cleared amendment", () => {
+    render(
+      <NoteEditor
+        note={note({
+          versionNumber: 2,
+          isAmendment: true,
+          amendmentReason: "Corrected the accuracy figure.",
         })}
       />,
     );

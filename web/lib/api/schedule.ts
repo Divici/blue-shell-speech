@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getSession } from "@/lib/auth/session";
+import { parseApiInstant } from "@/lib/practice-time";
 
 /**
  * Scheduling API client.
@@ -149,11 +150,11 @@ export function formatVisitTime(startUtc: string): string {
     hour: "numeric",
     minute: "2-digit",
     timeZone: PRACTICE_TIME_ZONE,
-  }).format(new Date(startUtc));
+  }).format(parseApiInstant(startUtc));
 }
 
 export function formatVisitRange(startUtc: string, durationMinutes: number): string {
-  const start = new Date(startUtc);
+  const start = parseApiInstant(startUtc);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
 
   const formatter = new Intl.DateTimeFormat("en-US", {

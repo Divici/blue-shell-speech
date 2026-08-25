@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -53,8 +54,16 @@ public sealed class UsesSqlServer : ICollectionFixture<SqlServerFixture>
 
 /// <summary>
 /// Boots the real API against the containerised database.
+///
+/// <paramref name="configureServices"/> replaces registrations AFTER the application has
+/// built its own, and exists for one purpose: making a dependency fail on demand. Some
+/// guarantees are only observable when something downstream breaks — "the audit row and
+/// the delete commit together" cannot be proven by a run where both succeed. Every test
+/// that uses it says which failure it is forcing and why.
 /// </summary>
-public sealed class PracticeApiFactory(string connectionString) : WebApplicationFactory<Program>
+public sealed class PracticeApiFactory(
+    string connectionString,
+    Action<IServiceCollection>? configureServices = null) : WebApplicationFactory<Program>
 {
     protected override IHost CreateHost(IHostBuilder builder)
     {
@@ -67,8 +76,15 @@ public sealed class PracticeApiFactory(string connectionString) : WebApplication
         return base.CreateHost(builder);
     }
 
-    protected override void ConfigureWebHost(IWebHostBuilder builder) =>
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
         builder.UseEnvironment("Development");
+
+        if (configureServices is not null)
+        {
+            builder.ConfigureTestServices(configureServices);
+        }
+    }
 
     public IServiceScope CreateScope() => Services.CreateScope();
 }

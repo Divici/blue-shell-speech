@@ -5,6 +5,7 @@ import { useFormStatus } from "react-dom";
 import { saveDraft, signNote, amendNote, discardDraft } from "./actions";
 import { INITIAL_NOTE_STATE } from "./state";
 import type { ClinicalNote } from "@/lib/api/notes";
+import { parseApiInstant } from "@/lib/practice-time";
 
 const SECTIONS = [
   {
@@ -56,14 +57,21 @@ export function NoteEditor({ note }: { note: ClinicalNote }) {
 }
 
 /**
- * Nothing written in any of the four sections.
+ * Nothing written in any of the four sections, and superseding nothing.
  *
  * The same question ClinicalNote.CanBeDiscarded asks in the aggregate and
  * TR_ClinicalNotes_PreventDeletingRealNotes asks in the database — whitespace included,
  * because UpdateContent trims before storing. This layer only decides whether to offer
  * the control; the two below decide whether the row goes.
+ *
+ * `isAmendment` is checked FIRST because an amendment satisfies every other clause. It
+ * starts as a Draft, clearing it is an ordinary edit, and the copy beneath this control
+ * would then claim nothing has been saved in the note while a signed version sits under
+ * it marked Amended. Leading a clinician to a tap the API refuses is worse than not
+ * offering it: the screen has told her something untrue about her own record.
  */
 function isEmptyNote(note: ClinicalNote): boolean {
+  if (note.isAmendment) return false;
   return SECTIONS.every((section) => !note[section.name].trim());
 }
 
@@ -213,7 +221,7 @@ function SignedNote({ note }: { note: ClinicalNote }) {
               dateStyle: "long",
               timeStyle: "short",
               timeZone: "America/New_York",
-            }).format(new Date(note.signedAtUtc))}
+            }).format(parseApiInstant(note.signedAtUtc))}
           </p>
         )}
       </article>

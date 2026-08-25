@@ -73,6 +73,31 @@ export function practiceLocalToUtc(date: string, time: string): Date {
   return corrected;
 }
 
+/**
+ * Reads a `*Utc` timestamp from an API payload.
+ *
+ * Every timestamp this API sends is UTC — by contract, and by the name of the field it
+ * arrives in. `new Date(value)` does not know that: given a value with no zone designator
+ * it applies the LOCAL zone, which in Maryland moves a clinical appointment four or five
+ * hours. That is not a rounding error on a schedule read between houses; it is the
+ * difference between a card that offers to document the session happening in the room and
+ * one that says the visit has not started.
+ *
+ * The endpoint is where this is fixed — PracticeDbContext stamps DateTimeKind.Utc on every
+ * value read out of `datetime2`, and an integration test asserts every `*Utc` field on the
+ * wire ends in Z. This is the second, independent control, on the D034 argument that two
+ * checks looking at the problem from different sides catch what either alone misses. It is
+ * recovery, not a substitute: if the designator goes missing again the API suite is what
+ * says so, and this is what stops a clinician seeing the wrong hour meanwhile.
+ *
+ * Only a bare `yyyy-mm-ddThh:mm:ss[.fff]` is stamped. A value carrying `Z` or an explicit
+ * offset already says what it means and is passed through untouched.
+ */
+export function parseApiInstant(value: string): Date {
+  const hasDesignator = /(?:Z|[+-]\d\d:?\d\d)$/.test(value);
+  return new Date(hasDesignator ? value : `${value}Z`);
+}
+
 /** The practice-local date ("yyyy-mm-dd") for a UTC instant. */
 export function utcToPracticeDate(instant: Date): string {
   return new Intl.DateTimeFormat("en-CA", {

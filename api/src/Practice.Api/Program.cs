@@ -14,6 +14,25 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenApi();
 
 /*
+ * RFC 9457 problem details for anything that throws, and nothing else.
+ *
+ * Without this the host renders whatever it likes for an unhandled exception. In
+ * Development that is the developer exception page — SQL text, parameter values, and a
+ * stack trace — from an application whose parameters are patient identifiers and whose
+ * SQL touches clinical prose. docs/THREAT_MODEL.md boundary 2 is the `web` → `api` hop;
+ * an error body crosses it exactly like a log line does, and the same rule applies.
+ *
+ * The default writer emits type, title, status and a traceId. It deliberately carries no
+ * exception message: the message is for the log, the traceId is for the human, and the
+ * two are joined by Serilog rather than by handing the caller the stack.
+ *
+ * This does NOT turn expected refusals into errors. A note that is signed, or written in,
+ * or superseding another, still answers 409 with a sentence written for a clinician —
+ * those are decisions, not failures, and they never reach here.
+ */
+builder.Services.AddProblemDetails();
+
+/*
  * Persistence and Identity.
  *
  * The connection string carries NO password. Azure SQL is configured for Entra-only
@@ -58,6 +77,17 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHostedService<ProviderSeeder>();
 
 var app = builder.Build();
+
+/*
+ * FIRST in the pipeline, and in every environment.
+ *
+ * WebApplication installs the developer exception page automatically in Development, and
+ * that is precisely the environment the integration suite runs in — so "it only leaks
+ * locally" would have meant "it leaks wherever anyone is looking". Registering the
+ * handler here puts it inside that middleware, so it answers first and the page never
+ * renders.
+ */
+app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {

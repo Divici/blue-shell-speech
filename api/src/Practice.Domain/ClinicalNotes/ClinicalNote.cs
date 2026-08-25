@@ -80,12 +80,23 @@ public sealed class ClinicalNote : Entity
     /// child's chart and signing it into immutability — which is a worse outcome than the
     /// mis-tap that created it.
     ///
-    /// SupersedesNoteId is deliberately NOT tested here. An amendment starts as a copy of
-    /// a signed version and Sign() refuses an empty note, so no amendment can be empty.
-    /// That chain is asserted rather than assumed — see An_amendment_is_never_discardable.
+    /// FALSE FOR AN AMENDMENT, whatever its content. That clause is not redundant with
+    /// the emptiness ones and an earlier version of this predicate went without it.
+    ///
+    /// Amend() marks the version it supersedes Amended with IsCurrent = 0 before the new
+    /// row exists, so the amendment IS the visit's current note. It also starts as a
+    /// Draft, and UpdateContent edits drafts freely — so clearing all four sections is an
+    /// ordinary supported call, after which every emptiness clause below is satisfied.
+    /// Deleting that row leaves the visit with no current note at all: the schedule offers
+    /// to start a fresh one, GET /notes/appointment/{visit} answers 404, and the signed
+    /// version underneath is reachable by nothing the product renders.
+    ///
+    /// The distinction the rest of the predicate draws is "does this row record anything".
+    /// An amendment records something even when blank — that a signed note was superseded.
     /// </summary>
     public bool CanBeDiscarded =>
         Status == NoteStatus.Draft
+        && SupersedesNoteId is null
         && string.IsNullOrWhiteSpace(Subjective)
         && string.IsNullOrWhiteSpace(Objective)
         && string.IsNullOrWhiteSpace(Assessment)

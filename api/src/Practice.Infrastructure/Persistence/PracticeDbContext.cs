@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Practice.Application.Providers;
 using Practice.Domain.Auditing;
 using Practice.Domain.ClinicalNotes;
@@ -79,14 +80,47 @@ public sealed class PracticeDbContext(
          * machine in a different zone from the one that wrote it — and this app stores
          * UTC while rendering America/New_York, which is exactly the setup where such a
          * bug hides until a DST boundary.
+         *
+         * THIS PARAGRAPH USED TO BE A CLAIM RATHER THAN A CONTROL. The loop below set the
+         * column type and nothing else, so nothing stamped the Kind and the comment
+         * described a guarantee that did not exist. What it cost: System.Text.Json writes
+         * an Unspecified DateTime with no Z, so every timestamp READ BACK from the
+         * database reached the browser as a floating local time while the same field
+         * echoed from an in-memory entity carried the designator. A 9am visit read as "not
+         * started yet" until 1pm on the day view, and a signature time displayed four hours
+         * out on a signed clinical note.
+         *
+         * The converter is READ-ONLY on purpose — `v => v` on the way in. Coercing a Local
+         * value to UTC on write would quietly repair a caller that used DateTime.Now, and
+         * this codebase asserts instead: Sign() and DocumentationBlockedReason both throw
+         * on a non-UTC Kind. There is nothing to assert on the way out, because the
+         * database genuinely has no Kind to give back — stamping it is restoring
+         * information the column type cannot carry, which is a different act from
+         * papering over a caller's mistake.
          */
+        var utcConverter = new ValueConverter<DateTime, DateTime>(
+            value => value,
+            value => DateTime.SpecifyKind(value, DateTimeKind.Utc));
+
+        var nullableUtcConverter = new ValueConverter<DateTime?, DateTime?>(
+            value => value,
+            value => value.HasValue
+                ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc)
+                : null);
+
         foreach (var entityType in builder.Model.GetEntityTypes())
         {
             foreach (var property in entityType.GetProperties())
             {
-                if (property.ClrType == typeof(DateTime) || property.ClrType == typeof(DateTime?))
+                if (property.ClrType == typeof(DateTime))
                 {
                     property.SetColumnType("datetime2(3)");
+                    property.SetValueConverter(utcConverter);
+                }
+                else if (property.ClrType == typeof(DateTime?))
+                {
+                    property.SetColumnType("datetime2(3)");
+                    property.SetValueConverter(nullableUtcConverter);
                 }
             }
         }

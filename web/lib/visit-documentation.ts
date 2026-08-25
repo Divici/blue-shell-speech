@@ -1,4 +1,5 @@
 import type { DayVisit } from "@/lib/api/schedule";
+import { parseApiInstant } from "@/lib/practice-time";
 
 /**
  * Which visits can be documented, and why the others cannot.
@@ -32,5 +33,13 @@ export function documentationBlockedReason(
   // of minutes early must not refuse its own note for the rest of the hour.
   if (visit.status === "Completed") return null;
 
-  return new Date(visit.startUtc).getTime() > now.getTime() ? NOT_STARTED : null;
+  /*
+   * parseApiInstant, not `new Date`.
+   *
+   * `startUtc` is UTC by contract. A bare `new Date` applies the LOCAL zone to a value
+   * with no designator, and the endpoint served exactly that shape — so a 09:00 visit in
+   * Maryland was read as 09:00 Eastern, four hours ahead of the instant it names, and this
+   * function said "not started yet" for the whole morning.
+   */
+  return parseApiInstant(visit.startUtc).getTime() > now.getTime() ? NOT_STARTED : null;
 }

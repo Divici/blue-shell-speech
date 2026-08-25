@@ -3,6 +3,7 @@ import {
   practiceLocalToUtc,
   utcToPracticeDate,
   utcToPracticeTime,
+  parseApiInstant,
 } from "./practice-time";
 
 /**
@@ -100,5 +101,55 @@ describe("round-tripping", () => {
       expect(utcToPracticeDate(utc), `${date} ${time}`).toBe(date);
       expect(utcToPracticeTime(utc), `${date} ${time}`).toBe(time);
     }
+  });
+});
+
+/**
+ * Reading an instant off an API payload.
+ *
+ * `new Date("2026-06-15T13:00:00")` — no zone designator — is LOCAL time in every
+ * JavaScript runtime. Every `*Utc` field this API sends is UTC by contract and by name, so
+ * a missing designator is a serialisation defect, not a different reading of the same
+ * value, and interpreting it locally silently moves a clinical appointment by the UTC
+ * offset. That happened: the schedule endpoint served `startUtc` without a Z, a 9am visit
+ * read as "not started yet" until 1pm, and the card that offers to document it showed a
+ * sentence explaining why it would not.
+ *
+ * The API is where that is fixed (PracticeDbContext's UTC value converter, pinned by
+ * Every_timestamp_the_api_serialises_is_marked_utc). This is the second, independent
+ * control: the reading is right whether or not the designator survives the trip.
+ */
+describe("parseApiInstant", () => {
+  it("reads a timestamp that carries its designator", () => {
+    expect(parseApiInstant("2026-06-15T13:00:00Z").toISOString()).toBe(
+      "2026-06-15T13:00:00.000Z",
+    );
+  });
+
+  /** The shape the endpoint actually served. It means the same instant. */
+  it("reads a designator-less timestamp as UTC, never as local time", () => {
+    expect(parseApiInstant("2026-06-15T13:00:00").toISOString()).toBe(
+      "2026-06-15T13:00:00.000Z",
+    );
+  });
+
+  it("gives the same instant for both spellings", () => {
+    expect(parseApiInstant("2026-06-15T13:00:00").getTime()).toBe(
+      parseApiInstant("2026-06-15T13:00:00Z").getTime(),
+    );
+  });
+
+  /** SQL Server's datetime2(3) round-trips milliseconds, so the fractional form arrives too. */
+  it("keeps sub-second precision", () => {
+    expect(parseApiInstant("2026-06-15T13:00:00.442").toISOString()).toBe(
+      "2026-06-15T13:00:00.442Z",
+    );
+  });
+
+  /** An explicit offset is already unambiguous and must not be re-stamped. */
+  it("leaves an explicit offset alone", () => {
+    expect(parseApiInstant("2026-06-15T09:00:00-04:00").toISOString()).toBe(
+      "2026-06-15T13:00:00.000Z",
+    );
   });
 });
