@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -41,6 +42,60 @@ public sealed class SqlServerFixture : IAsyncLifetime
         // provider exists.
         await using var db = new PracticeDbContext(options, new FixedProviderContext(null));
         await db.Database.MigrateAsync();
+    }
+
+    /// <summary>
+    /// A migrated database of its own, in the SAME container.
+    ///
+    /// WHY ANY TEST WOULD WANT ONE. Every class in the sqlserver collection shares one
+    /// database, and each of them seeds providers as it goes — so by the time any given
+    /// class runs, the Providers table holds however many its predecessors created. That
+    /// is harmless for endpoints that take a provider from a header, and fatal for
+    /// <c>POST /consultation-requests</c>, whose whole design is that it resolves THE SOLE
+    /// ACTIVE PROVIDER and refuses when the answer is ambiguous. Asserting that rule needs
+    /// a table whose contents the test controls.
+    ///
+    /// A second database rather than a second container: SQL Server takes tens of seconds
+    /// to start and the collection already pays that once. A second container would also
+    /// hide a real property of the deployment — one server, one engine, one set of
+    /// triggers — behind a difference that does not exist in production.
+    ///
+    /// Deliberately NOT a way to make tests independent in general. The shared database is
+    /// the honest default: rows other tests left behind are exactly the conditions the
+    /// application runs in, and a test that only passes in an empty schema is a test that
+    /// has not met production.
+    /// </summary>
+    public async Task<string> CreateIsolatedDatabaseAsync(string name)
+    {
+        // Sanitised rather than trusted: the name is interpolated into DDL, which cannot
+        // be parameterised. Test-only, and still not a place to be relaxed about it.
+        if (!name.All(char.IsAsciiLetterOrDigit))
+        {
+            throw new ArgumentException("Letters and digits only.", nameof(name));
+        }
+
+        var builder = new SqlConnectionStringBuilder(ConnectionString);
+
+        await using (var connection = new SqlConnection(builder.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var create = connection.CreateCommand();
+            create.CommandText = $"IF DB_ID(N'{name}') IS NULL CREATE DATABASE [{name}];";
+            await create.ExecuteNonQueryAsync();
+        }
+
+        builder.InitialCatalog = name;
+
+        var options = new DbContextOptionsBuilder<PracticeDbContext>()
+            .UseSqlServer(builder.ConnectionString)
+            .Options;
+
+        // Migrations, for the same reason InitializeAsync uses them: this exercises the
+        // scripts production runs.
+        await using var db = new PracticeDbContext(options, new FixedProviderContext(null));
+        await db.Database.MigrateAsync();
+
+        return builder.ConnectionString;
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();

@@ -2,7 +2,9 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Practice.Application.Authentication;
+using Practice.Application.Consultations;
 using Practice.Infrastructure.Identity;
+using Practice.Infrastructure.Notifications;
 using Practice.Infrastructure.Persistence;
 
 namespace Practice.Infrastructure;
@@ -79,6 +81,7 @@ public static class InfrastructureServices
 
         services.AddScoped<IAuditWriter, AuditWriter>();
         services.AddScoped<IProviderAuthenticator, ProviderAuthenticator>();
+        services.AddScoped<IConsultationNotifier, LoggingConsultationNotifier>();
 
         return services;
     }

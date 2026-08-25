@@ -91,6 +91,35 @@ export class RateLimiter {
 }
 
 /**
+ * The one identity in `x-forwarded-for` that the caller could not have chosen.
+ *
+ * THE HEADER IS A LIST, AND ITS LEFT-HAND END BELONGS TO THE CLIENT. A proxy APPENDS the
+ * address it is talking to, so behind Container Apps ingress the header arrives as
+ * `whatever-the-browser-sent, real-client-address`. Reading `[0]` — which this used to do —
+ * reads the half an attacker writes: rotate it per request and every submission lands in
+ * its own bucket, so the limiter counts to one forever for anybody who thinks to set it,
+ * and the control it provides is zero. The rightmost entry is the proxy's own observation.
+ *
+ * TRUSTED EXACTLY AS FAR AS THE TOPOLOGY ALLOWS, which is worth stating plainly: with no
+ * proxy in front — a local `next start` — there is nothing appending anything, so the whole
+ * header is client-supplied and the limiter is spoofable. That is a property of running
+ * without ingress rather than something this function can fix, and it is why the E2E suite
+ * can hand each test its own address (`e2e/fixtures.ts`).
+ *
+ * The fallback is a SHARED constant, so callers we cannot tell apart share one bucket. That
+ * over-throttles, which is the safe direction; a unique fallback would disable the limiter
+ * precisely where the header is missing.
+ */
+export function clientIdentifier(forwardedFor: string | null | undefined): string {
+  const hops = (forwardedFor ?? "")
+    .split(",")
+    .map((hop) => hop.trim())
+    .filter(Boolean);
+
+  return hops.at(-1) ?? "unknown-client";
+}
+
+/**
  * SHA-256 of a client identifier.
  *
  * The limiter needs to tell callers apart; it does not need to know who they are. An IP

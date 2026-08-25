@@ -7,7 +7,9 @@ import {
   isLikelyBot,
   type ConsultationInput,
 } from "@/lib/consultation-schema";
-import { RateLimiter, hashClientId } from "@/lib/rate-limit";
+import { RateLimiter, hashClientId, clientIdentifier } from "@/lib/rate-limit";
+import { consultationsApi } from "@/lib/api/consultations";
+import { practiceContact } from "@/lib/practice-contact";
 
 /**
  * Module-level so the counter survives between requests within a replica.
@@ -19,17 +21,22 @@ import { RateLimiter, hashClientId } from "@/lib/rate-limit";
 const limiter = new RateLimiter({ limit: 5, windowMs: 10 * 60_000 });
 
 /**
- * Identifies the caller for rate-limiting purposes, hashed.
+ * Identifies the caller, hashed — ONE value, used twice.
  *
- * Falls back to a constant when no forwarded address is present, which means every such
- * caller shares one bucket. That is the deliberate direction to fail: behind Container
- * Apps ingress the header is always set, and sharing a bucket over-throttles rather than
- * silently disabling the limit.
+ * It keys the rate limiter, and it is the `SourceIpHash` stored on the row
+ * (docs/DATA_MODEL.md). Deliberately the same derivation for both: a second hashing scheme
+ * would produce a column that correlates with nothing the limiter ever counted, and
+ * "did these twelve enquiries come from one place" is the only question either of them
+ * exists to answer.
+ *
+ * `clientIdentifier` takes the entry the PROXY appended rather than the first one in the
+ * header — see `lib/rate-limit.ts` for why the leading entry is the caller's to choose,
+ * and what reading it cost. It falls back to a shared constant when there is no address
+ * at all, which over-throttles rather than silently disabling the limit.
  */
 async function clientKey(): Promise<string> {
   const headerList = await headers();
-  const forwarded = headerList.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return hashClientId(forwarded || "unknown-client");
+  return hashClientId(clientIdentifier(headerList.get("x-forwarded-for")));
 }
 
 
@@ -39,12 +46,16 @@ async function clientKey(): Promise<string> {
  * A Server Action, so validation runs on the server whether or not JavaScript is
  * available. Client-side validation on this form is a convenience; this is the control.
  *
- * NOTHING FROM THIS FORM IS LOGGED — and there is no logging here at all, which is the
- * honest version of that sentence. It carries a child's first name and a parent's
+ * NOTHING FROM THIS FORM IS LOGGED — and there is no logging in this file at all, which is
+ * the honest version of that sentence. It carries a child's first name and a parent's
  * description of their developmental concerns. This comment used to go on to describe a
- * validation failure being "logged as which fields failed"; nothing in this file writes a
- * log line, so that described a mechanism rather than the code (the D072 defect class).
- * When one arrives it carries field names only, never values, per docs/SECURITY.md.
+ * validation failure being "logged as which fields failed"; nothing here writes a log line,
+ * so that described a mechanism rather than the code (the D072 defect class).
+ *
+ * One line IS written, and not by this file: `lib/api/consultations.ts` reports a failed
+ * submission as a bare status code, because a submission that vanishes with no trace
+ * anywhere looks exactly like a quiet week. It carries the status and nothing else —
+ * no field names, no values (docs/SECURITY.md, non-negotiable #3).
  */
 export async function submitConsultation(
   _previous: ConsultationState,
@@ -75,7 +86,9 @@ export async function submitConsultation(
    * Rate limit AFTER the honeypot, so a bot burns no budget that a real parent might
    * need, and BEFORE validation, so a submission loop cannot make us do parsing work.
    */
-  const { allowed, retryAfterMs } = limiter.check(await clientKey());
+  const sourceIpHash = await clientKey();
+
+  const { allowed, retryAfterMs } = limiter.check(sourceIpHash);
   if (!allowed) {
     const minutes = Math.max(1, Math.ceil(retryAfterMs / 60_000));
     return {
@@ -110,15 +123,67 @@ export async function submitConsultation(
   }
 
   /*
-   * TODO(slice 3): POST to the .NET API, which persists a ConsultationRequest and sends
-   * a CONTENTLESS notification — "New consultation request, sign in to view". Email is
-   * not a channel we control, and a child's name plus a list of developmental concerns
-   * sitting in a plaintext inbox is a disclosure (docs/DATA_MODEL.md).
+   * PERSISTED BEFORE THE PARENT IS THANKED.
    *
-   * Until the API exists, the form validates and confirms but does not persist. That is
-   * a deliberate, visible gap rather than a silent one: slice 1 ships the public site,
-   * and the API arrives with authentication in slice 2.
+   * This is where slice 1's one unmet criterion was: the form validated, confirmed, and
+   * stored nothing, which was recorded rather than hidden (docs/SLICE_1_VERIFICATION.md).
+   * Closing it changes what the confirmation MEANS — "your request is on its way" is now a
+   * claim about a row that exists — so every path that fails to produce one has to stop
+   * making it.
+   *
+   * The API sends the notification, not this tier, and it is CONTENTLESS by construction:
+   * IConsultationNotifier has no parameter through which a child's name could travel
+   * (CLAUDE.md, docs/DATA_MODEL.md).
    */
+  let outcome: Awaited<ReturnType<typeof consultationsApi.submit>>;
+  try {
+    outcome = await consultationsApi.submit({
+      parentName: value.parentName,
+      email: value.email,
+      phone: value.phone,
+      childFirstName: value.childFirstName,
+      childAgeMonths: value.childAgeMonths,
+      concerns: value.concerns,
+      preferredContact: value.preferredContact,
+      sourceIpHash,
+    });
+  } catch {
+    /*
+     * A missing API_BASE_URL throws from the client, deliberately, and it must not take
+     * the page down with it: a broken deployment is still a parent sitting in front of a
+     * form. They get the same recoverable error as an API that is merely down, and the
+     * throw is what a container log has to show for it.
+     */
+    outcome = { stored: false };
+  }
+
+  if (!outcome.stored) {
+    /*
+     * NOT a success. A family told "we'll be in touch" about an enquiry that was never
+     * recorded does not follow up, and nobody finds out — which is a worse outcome than an
+     * error message by a wide margin.
+     *
+     * The values are echoed back for the same reason a validation failure echoes them: the
+     * free-text description of a child is the hardest part of this form to type, and it is
+     * the part somebody who has just been told to try again is most likely to abandon over.
+     */
+    return {
+      status: "error",
+      errors: {},
+      values: {
+        parentName: value.parentName,
+        email: value.email,
+        phone: value.phone,
+        childFirstName: value.childFirstName,
+        childAgeMonths: input.childAgeMonths,
+        concerns: value.concerns,
+        preferredContact: value.preferredContact,
+      },
+      message:
+        "We couldn't save your request just now. Please try again in a few minutes — " +
+        `or call ${practiceContact().phone} and we'll take the details over the phone.`,
+    };
+  }
 
   return { status: "success", errors: {} };
 }

@@ -16,7 +16,7 @@ Verified 2026-08-24. CI green across all five jobs.
 | 3 | Service chips include AAC | `e2e` asserts `#services` contains "AAC" | **Met** |
 | 4 | Nav anchors scroll; Consultation → `/consultation`; Login → `/login`, secondary | `e2e` asserts every nav href is an anchor, plus both routes | **Met** |
 | 5 | No services grid, no testimonials, no Resources tab | `e2e` asserts each removed string is absent | **Met** |
-| 6 | `/consultation` posts, persists, contentless notification | Posts and validates server-side. **Persistence deferred** | **Partial** |
+| 6 | `/consultation` posts, persists, contentless notification | `ConsultationRequest` + migration; `POST /consultation-requests`; notification contentless by signature | **Met** (2026-08-25) |
 | 7 | Form has validation / error / loading / success states | `e2e` covers empty submit and success; `useFormStatus` drives pending | **Met** |
 | 8 | Lighthouse ≥90/95/95/95 mobile | **100 / 100 / 100 / 100** deployed | **Met** |
 | 9 | LCP ≤2.5s, INP ≤200ms, CLS ≤0.1 | **LCP 1.6s · CLS 0 · TBT 10ms** deployed | **Met** |
@@ -29,22 +29,29 @@ Verified 2026-08-24. CI green across all five jobs.
 
 ---
 
-## The one partial
+## The one partial — closed 2026-08-25 (WORK_QUEUE 1.5)
 
-**Criterion 6 — persistence.** The consultation form validates on the server, rejects bad
-input, blocks bots, and confirms to the parent. It does **not** yet write a
-`ConsultationRequest` row or send a notification, because the .NET API and its database
-arrive in slices 2–3.
+**Criterion 6 — persistence.** For the length of slices 1–5 this form validated on the server,
+rejected bad input, blocked bots, and confirmed to the parent while storing **nothing**. That
+was recorded here rather than quietly counted as passing, which is the distinction Guardrail 1
+exists to protect.
 
-This is a **visible, deliberate gap**, marked with a `TODO(slice 3)` in
-`app/consultation/actions.ts` that names exactly what must happen — persist the row, send a
-**contentless** notification ("New consultation request, sign in to view"), because email is
-not a channel we control and a child's name plus a list of developmental concerns in a
-plaintext inbox is a disclosure.
+It is closed. The submission is written to `ConsultationRequests` — with its
+`ConsultationRequestReceived` audit row in the same transaction — before the parent is thanked,
+and the notification is contentless *by signature*: `IConsultationNotifier` has no parameter
+through which a child's name could travel.
 
-**Slice 1 is not "done" while this is open.** It is recorded here rather than quietly
-counted as passing, which is the distinction Guardrail 1 exists to protect: a slice cannot
-be declared complete by reinterpreting its criteria.
+**What changed beyond adding a write:** a confirmation is now a claim about a row, so every
+path that fails to produce one had to stop making it. An unreachable API, a practice with no
+clinician to receive the enquiry, or a submission the API refuses all render an error that
+keeps what the parent typed and points at the phone number. Telling a family "we'll be in
+touch" about an enquiry that vanished is worse than an error, because they do not follow up
+and nobody ever finds out.
+
+**Still open, and tracked rather than implied** (WORK_QUEUE 1.13): the notification is composed
+and logged, not sent, because the practice has no mailbox — "real practice phone and email" is
+on the Blocked list, and a verified sender domain needs the domain purchase blocked with it.
+And nothing yet renders the enquiries that email tells Michelle to sign in and read.
 
 ---
 
@@ -65,7 +72,7 @@ Real defects caught, each now covered by a regression test or a recorded decisio
 
 ## Remaining before the slice closes
 
-- [ ] Persist consultation requests (blocked on slice 3)
+- [x] Persist consultation requests — done 2026-08-25, WORK_QUEUE 1.5
 - [ ] Visual gauntlet round against the comps
 - [ ] `/super-review` pass at the slice boundary
 - [ ] Cold start resolved via CDN — blocked on the domain, tracked as blocker #6

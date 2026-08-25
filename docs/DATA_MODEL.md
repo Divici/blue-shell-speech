@@ -310,15 +310,35 @@ file store; patient document upload is a separate entity when it arrives.
 Public intake form (§4.1). **Not PHI until Michelle acts on it** — it is a prospect enquiry —
 but it is treated as PHI-adjacent and stored under the same controls.
 
-`Id`/`PublicId`, `SubmittedAtUtc`, `ParentName`, `Email`, `Phone`, `ChildFirstName`,
-`ChildAgeMonths`, `Concerns` (`nvarchar(2000)`), `PreferredContactMethod`, `Status`
-(`New`/`Contacted`/`Converted`/`Declined`), `ConvertedPatientId`, `SourceIpHash`.
+`Id`/`PublicId`, `ProviderId`, `SubmittedAtUtc`, `ParentName`, `Email`, `Phone`,
+`ChildFirstName`, `ChildAgeMonths`, `Concerns` (`nvarchar(2000)`), `PreferredContactMethod`,
+`Status` (`New`/`Contacted`/`Converted`/`Declined`), `ConvertedPatientId`, `SourceIpHash`.
+
+Column widths are the same numbers the aggregate enforces, and an over-long value is **refused,
+never truncated**: a column with more room than the aggregate allows is a second, quieter limit
+that only a raw `INSERT` can reach.
+
+**`ProviderId` on a row nobody was signed in to create.** The form is public, so there is no
+session to take one from — the API resolves the **sole active provider** and refuses with 503
+when that answer is ambiguous, rather than picking one. Reasoning and cost in `DECISIONS.md`
+D078. Filtered like every other tenant table; a query filter constrains reads, never inserts,
+so the anonymous POST is unaffected and the enquiry is only visible through a session.
 
 `SourceIpHash` is hashed, not raw — spam correlation without retaining a visitor identifier.
+`char(64)`, because a SHA-256 hex digest is exactly that and the column should say so. The
+**BFF** computes it, being the only tier that can see a client address, and it is the *same*
+value the consultation rate limiter keys on — one derivation, two uses. The aggregate refuses
+anything not shaped like a digest, so an address cannot be passed straight through. The raw
+address is not written to the audit row either: `AuditEvent.IpAddress` is deliberately left
+null on `ConsultationRequestReceived`.
 
 The notification email carries **no content**: *"New consultation request, sign in to view."*
 Email is not a channel we control, and a child's name plus a list of developmental concerns in
-a plaintext inbox is a disclosure.
+a plaintext inbox is a disclosure. This is enforced by the SEAM rather than by care at the call
+site: `IConsultationNotifier.NotifyAsync` takes an opaque `Guid` and has no parameter through
+which content could travel. Transport is not built — the practice has no mailbox yet (a Blocked
+item) — so the implementation writes the same contentless pair to a log, and the enquiry is
+durable in the table regardless.
 
 ---
 

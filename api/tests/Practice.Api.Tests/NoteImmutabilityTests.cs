@@ -994,17 +994,6 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     }
 
     /// <summary>
-    /// An IAuditWriter that cannot write, to force the failure the atomicity claim is
-    /// about. Nothing in a passing run can distinguish "committed together" from
-    /// "committed one after the other" — only a broken second write can.
-    /// </summary>
-    private sealed class UnwritableAuditWriter : IAuditWriter
-    {
-        public Task WriteAsync(AuditEvent auditEvent) =>
-            throw new InvalidOperationException("The audit table is unavailable.");
-    }
-
-    /// <summary>
     /// F3: the delete and its audit row are one transaction.
     ///
     /// They were two `SaveChangesAsync` calls on the request's cancellation token, so the
@@ -1213,71 +1202,9 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
      *
      * Forced here rather than waited for: a strategy that retries on one marker exception
      * and an audit writer that raises it once, so the second attempt is a certainty
-     * instead of a Tuesday.
+     * instead of a Tuesday. Both live in FailureHarness.cs — shared, because the
+     * consultation write needs the same forced retry and a second copy would drift.
      */
-
-    /// <summary>A failure the execution strategy below treats as transient. Nothing else does.</summary>
-    private sealed class TransientBlipException()
-        : Exception("A transient failure, raised on purpose.");
-
-    /// <summary>
-    /// Retries on <see cref="TransientBlipException"/> and on nothing else.
-    ///
-    /// Deliberately not SqlServerRetryingExecutionStrategy with an added error number: a
-    /// real transient SQL error cannot be raised on demand, and simulating one by picking
-    /// an error code that SQL Server also raises for other reasons would make the test
-    /// depend on the engine's mood. What is under test is the BODY's behaviour on a
-    /// second attempt, so the trigger for that attempt should be the least interesting
-    /// part of the setup.
-    /// </summary>
-    private sealed class BlipRetryingExecutionStrategy(ExecutionStrategyDependencies dependencies)
-        : ExecutionStrategy(dependencies, maxRetryCount: 3, maxRetryDelay: TimeSpan.FromMilliseconds(10))
-    {
-        protected override bool ShouldRetryOn(Exception exception) =>
-            exception is TransientBlipException;
-    }
-
-    /// <summary>
-    /// Tracks the audit row, then fails the save — once.
-    ///
-    /// The order matters and is the whole point: the entity is Added and the save is what
-    /// breaks, which is exactly the shape of a transient failure against a real database.
-    /// A writer that threw BEFORE tracking anything would leave a clean change tracker and
-    /// prove nothing.
-    /// </summary>
-    private sealed class BlipsOnceAuditWriter(PracticeDbContext db) : IAuditWriter
-    {
-        private bool _blipped;
-
-        public async Task WriteAsync(AuditEvent auditEvent)
-        {
-            db.AuditEvents.Add(auditEvent);
-
-            if (!_blipped)
-            {
-                _blipped = true;
-                throw new TransientBlipException();
-            }
-
-            await db.SaveChangesAsync(CancellationToken.None);
-        }
-    }
-
-    /// <summary>Swaps in the retrying strategy and the writer that provokes it.</summary>
-    private static void RetryOnceOnATransientBlip(
-        string connectionString, IServiceCollection services)
-    {
-        // AddDbContext uses TryAdd, so the application's own options win unless the
-        // existing registration is removed first.
-        services.RemoveAll<DbContextOptions<PracticeDbContext>>();
-        services.RemoveAll<DbContextOptions>();
-
-        services.AddDbContext<PracticeDbContext>(options =>
-            options.UseSqlServer(connectionString,
-                sql => sql.ExecutionStrategy(deps => new BlipRetryingExecutionStrategy(deps))));
-
-        services.AddScoped<IAuditWriter, BlipsOnceAuditWriter>();
-    }
 
     /// <summary>
     /// F2: one deletion leaves one audit row, however many attempts it took.
@@ -1311,7 +1238,7 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
         var note = (await created.Content.ReadFromJsonAsync<NoteDto>())!;
 
         using var retrying = new PracticeApiFactory(sql.ConnectionString,
-            services => RetryOnceOnATransientBlip(sql.ConnectionString, services));
+            services => FailureHarness.RetryOnceOnATransientBlip(sql.ConnectionString, services));
         using var retryingClient = retrying.CreateClient();
         retryingClient.DefaultRequestHeaders.Add(
             RequestProviderContext.HeaderName, providerPublicId.ToString());

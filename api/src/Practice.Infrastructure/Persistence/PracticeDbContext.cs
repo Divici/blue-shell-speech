@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Practice.Application.Providers;
 using Practice.Domain.Auditing;
 using Practice.Domain.ClinicalNotes;
+using Practice.Domain.Consultations;
 using Practice.Domain.Goals;
 using Practice.Domain.Patients;
 using Practice.Domain.Scheduling;
@@ -39,6 +40,8 @@ public sealed class PracticeDbContext(
 
     public DbSet<ClinicalNote> ClinicalNotes => Set<ClinicalNote>();
 
+    public DbSet<ConsultationRequest> ConsultationRequests => Set<ConsultationRequest>();
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
@@ -71,6 +74,18 @@ public sealed class PracticeDbContext(
             g => providerContext.ProviderId != null && g.ProviderId == providerContext.ProviderId);
         builder.Entity<ClinicalNote>().HasQueryFilter(
             n => providerContext.ProviderId != null && n.ProviderId == providerContext.ProviderId);
+
+        /*
+         * Filtered like everything else, even though it is WRITTEN by an anonymous caller.
+         *
+         * A query filter constrains reads, never inserts, so the public form's POST is
+         * unaffected — it stamps the provider the API resolved and saves. What the filter
+         * governs is the other half: the enquiry is read back through a session, and until
+         * one exists it is invisible to the same request that created it. That asymmetry
+         * is the intended shape of a public intake row, not an oversight.
+         */
+        builder.Entity<ConsultationRequest>().HasQueryFilter(
+            c => providerContext.ProviderId != null && c.ProviderId == providerContext.ProviderId);
 
         /*
          * Every DateTime is UTC, enforced at the mapping layer.

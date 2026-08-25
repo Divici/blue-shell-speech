@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
+import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 import { revealMainNav } from "./site-nav";
+import { submissionsReceivedFor, UNSTORABLE_CHILD } from "./consultation-api";
 
 /**
  * Slice 1 acceptance criteria, executable.
@@ -185,21 +187,76 @@ test.describe("consultation", () => {
     await expect(page.getByText("Please enter your child's first name.")).toBeVisible();
   });
 
-  test("accepts a complete submission and confirms", async ({ page }) => {
+  /**
+   * A CHILD'S NAME PER TEST, and why.
+   *
+   * The API stand-in counts submissions by child name, so a distinct one gives each test a
+   * count of its own — and the three browser projects run the same test in parallel, which
+   * is why the project name is part of it. `Unstorable` is reserved: a submission naming
+   * that child is answered 503, which is how the failure path is reached without a shared
+   * flag the projects would race on.
+   */
+  async function fillConsultation(page: Page, childFirstName: string) {
     await page.goto("/consultation");
 
     await page.getByLabel("Your name").fill("Jordan Reyes");
     await page.getByLabel("Email").fill("jordan@example.com");
     await page.getByLabel("Phone").fill("410-555-0142");
-    await page.getByLabel("Your child's first name").fill("Maya");
+    await page.getByLabel("Your child's first name").fill(childFirstName);
     await page.getByLabel("Your child's age in months").fill("30");
     await page
       .getByLabel("What are you noticing?")
       .fill("She has a few words but isn't combining them yet.");
 
     await page.getByRole("button", { name: /send request/i }).click();
+  }
+
+  /**
+   * THE CONFIRMATION IS A CLAIM ABOUT A ROW NOW.
+   *
+   * Until this task the form validated, confirmed, and stored nothing — the one criterion
+   * slice 1 could not meet (docs/SLICE_1_VERIFICATION.md). Asserting the thank-you alone
+   * would therefore be asserting exactly the behaviour that was wrong: it was already green
+   * while nothing was written.
+   *
+   * Control: the `consultationsApi.submit(...)` call in `app/consultation/actions.ts`.
+   * Deleted → red on the count, "expect(received).toBe(expected) — Expected: 1, Received:
+   * 0", while the thank-you assertion on the line above it stays GREEN. That is the whole
+   * reason the count is here, and it was confirmed by running the deletion rather than
+   * assumed.
+   */
+  test("accepts a complete submission, stores it, and confirms", async ({
+    page,
+    request,
+  }, testInfo) => {
+    const child = `Maya-${testInfo.project.name}`;
+
+    await fillConsultation(page, child);
 
     await expect(page.getByRole("status")).toContainText(/thank you/i);
+    expect(await submissionsReceivedFor(request, child)).toBe(1);
+  });
+
+  /**
+   * A PARENT IS NEVER THANKED FOR SOMETHING THAT WAS NOT RECORDED.
+   *
+   * A family told "we’ll be in touch" about an enquiry that vanished does not follow up,
+   * and nobody ever finds out. The failure keeps everything they typed and points at the
+   * phone number, which is the only route left when the practice cannot take the form.
+   *
+   * Control: the `!outcome.stored` branch in `app/consultation/actions.ts`.
+   * Deleted → red, "expect(locator).toBeVisible() failed — Expected: visible, Error:
+   * element(s) not found": there is no alert, because the page renders the thank-you.
+   */
+  test("does not confirm a submission the practice could not store", async ({ page }) => {
+    await fillConsultation(page, UNSTORABLE_CHILD);
+
+    const alert = page.locator("form").getByRole("alert");
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText(/call/i);
+
+    // What they wrote is still on the page, so trying again is not retyping it.
+    await expect(page.getByLabel("What are you noticing?")).toHaveValue(/few words/);
   });
 });
 

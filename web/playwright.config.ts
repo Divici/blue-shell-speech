@@ -2,6 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 const PORT = 3000;
 
+// Kept in step with the default in `e2e/api-stub.mjs` and `e2e/consultation-api.ts`.
+const API_STUB_PORT = Number(process.env.API_STUB_PORT ?? 3001);
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -37,10 +40,34 @@ export default defineConfig({
     { name: "mobile-safari", use: { ...devices["iPhone 14"] } },
   ],
 
-  webServer: {
-    command: "npm run build && npm run start",
-    url: `http://localhost:${PORT}`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 180_000,
-  },
+  /*
+   * TWO SERVERS: the site, and a stand-in for the .NET API.
+   *
+   * The consultation form no longer confirms anything it has not stored, so the browser
+   * flow depends on a POST reaching an API that answers. This job has no database and no
+   * .NET runtime, and standing a real API up here would duplicate the `api` job's signal
+   * and make the front-end suite fail on a migration. `e2e/api-stub.mjs` says at length
+   * what the stand-in is and what it must never become — everything the API DECIDES is
+   * asserted against real SQL Server in Practice.Api.Tests.
+   *
+   * API_BASE_URL is set here rather than left to `.env.local` or the CI job, both of which
+   * point at a real API that is not running. Playwright merges this over process.env, and
+   * Next does not overwrite an environment variable that is already set — so this wins in
+   * both places without either file changing.
+   */
+  webServer: [
+    {
+      command: "node e2e/api-stub.mjs",
+      url: `http://127.0.0.1:${API_STUB_PORT}/_health`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: "npm run build && npm run start",
+      url: `http://localhost:${PORT}`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 180_000,
+      env: { API_BASE_URL: `http://127.0.0.1:${API_STUB_PORT}` },
+    },
+  ],
 });

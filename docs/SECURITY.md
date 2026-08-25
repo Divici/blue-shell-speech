@@ -146,7 +146,8 @@ per-route means someone forgets. Asserted by a test hitting every authenticated 
 Append-only `AuditEvent`. Application principal has **no `UPDATE` or `DELETE`** grant on it.
 
 Recorded: `PatientViewed`, `NoteSigned`, `NoteAmended`, `NoteDiscarded`, `AudioDeleted`,
-`LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `ExportGenerated`.
+`LoginSucceeded`, `LoginFailed`, `MfaChallenged`, `ExportGenerated`,
+`ConsultationRequestReceived`, `ConsultationNotificationFailed`.
 
 **Reads are audited, not just writes.** Under HIPAA, access to ePHI is an auditable event; most
 homegrown systems log only writes and discover the gap during an investigation.
@@ -203,6 +204,21 @@ and `action=address-added|address-corrected;address={publicId};type=Session|Bill
 `HasLegalAuthority` gates who may receive a child's records, so "who was allowed, and when did
 that change" has to be answerable after the fact — a custody arrangement cannot be
 reconstructed from the current row. Adding a guardian previously wrote nothing (D073).
+
+**The public consultation form's write is audited**, as `ConsultationRequestReceived` with
+`source=public-form;sourceIpHash={hash|none}`, in the same transaction as the row itself
+(`AtomicWrites.WriteAtomicallyAsync`). It is the only write in this system performed by an
+UNAUTHENTICATED caller: no session, no actor id, and nobody to ask afterwards, so the audit row
+is the only evidence a submission flood leaves behind. Adding an entity is not audited by
+default — the guardian write shipped writing nothing (D073) — so this exists because it was
+written. `IpAddress` is left NULL on that row on purpose: hashing the address on the enquiry
+and then recording it in full one table over would undo the decision entirely, in the table
+this document says is never purged.
+
+A notification that cannot be delivered is `ConsultationNotificationFailed`, its own event
+rather than a `Failure` outcome on the arrival — the enquiry DID arrive, and a row saying
+otherwise is what gets counted a year later. A silently failing notifier looks exactly like a
+working one.
 
 `Metadata` never contains clinical content — the audit log is the table most likely to be
 exported or read by a third party, which multiplies the blast radius of anything in it. The
