@@ -28,6 +28,20 @@ public static class InfrastructureServices
                 // while the database resumes. Without a retry policy that surfaces to
                 // Michelle as an error on an app that is merely waking up.
                 sql.EnableRetryOnFailure(maxRetryCount: 5, TimeSpan.FromSeconds(10), null);
+
+                /*
+                 * Stated, rather than inherited from SqlClient's default.
+                 *
+                 * It was absent — while DesignTimeDbContextFactory sets 180 twenty lines
+                 * away — so the bound on a command was whatever the driver happened to
+                 * use, and a `Command Timeout` keyword in a connection string this
+                 * application does not own could have replaced it with anything, zero
+                 * included. That matters most where nothing else can intervene: an audit
+                 * write does not observe the request token by design (D075), so this and
+                 * the retry budget above are the ONLY things bounding it. The value and
+                 * the arithmetic are on DatabaseTimeouts.
+                 */
+                sql.CommandTimeout(DatabaseTimeouts.CommandSeconds);
             }));
 
         services

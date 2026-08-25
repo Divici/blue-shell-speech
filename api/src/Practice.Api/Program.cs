@@ -8,7 +8,9 @@ using Practice.Application.Providers;
 using Practice.Infrastructure;
 using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Practice.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -58,6 +60,28 @@ builder.Services.AddInfrastructure(
         "ConnectionStrings:Sql is not configured. The API cannot start without a database."));
 
 /*
+ * A CEILING ON A REQUEST NOBODY IS WAITING FOR.
+ *
+ * There was none, and no command timeout either, so a request issued against a database
+ * resuming from auto-pause could hold a request and a pooled connection for minutes after
+ * the caller had gone — the BFF gives up at twenty-five seconds, and nothing on this side
+ * noticed. On a container that scales to zero, connections are the resource that runs out
+ * first, and the requests holding them are the ones nobody will ever read the answer to.
+ *
+ * It bounds what can be abandoned and nothing else. Cancelling RequestAborted stops reads
+ * and stops a transaction body before its commit; it does NOT stop an audit write, which
+ * deliberately holds no token (D075). That asymmetry is the design: an audit row that
+ * vanishes when a phone locks is not an audit row, and what bounds THAT is the command
+ * timeout and the retry budget, written down on DatabaseTimeouts.
+ *
+ * The middleware goes in below, immediately after the exception handler. Options without
+ * it would be the D072 defect exactly — configuration present, control absent, and
+ * everything looking right to whoever greps for it.
+ */
+builder.Services.AddRequestTimeouts(options =>
+    options.DefaultPolicy = new RequestTimeoutPolicy { Timeout = DatabaseTimeouts.Request });
+
+/*
  * Two probes with different jobs (docs/ARCHITECTURE.md).
  *
  *   live  — is the process up? Failing restarts the container.
@@ -99,6 +123,17 @@ var app = builder.Build();
  * renders.
  */
 app.UseExceptionHandler();
+
+/*
+ * Immediately inside the exception handler, and outside everything else.
+ *
+ * Outside, because the first thing an authenticated request does is resolve the forwarded
+ * provider with a query (ProviderContextMiddleware) — a bound that started after that
+ * would not cover the query most likely to be waiting on a resuming database. Inside the
+ * exception handler, because a timeout answers 504 itself and should never be re-rendered
+ * as an unhandled fault.
+ */
+app.UseRequestTimeouts();
 
 if (app.Environment.IsDevelopment())
 {

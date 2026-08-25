@@ -86,8 +86,15 @@ public static class ConsultationEndpoints
         }
 
         /*
-         * The provider is resolved before anything is constructed, so an enquiry that has
-         * nowhere to go costs one indexed query rather than a validation pass.
+         * A cheap first pass, so an enquiry that has nowhere to go costs one indexed query
+         * rather than a validation pass and a transaction.
+         *
+         * NOT the answer. The answer is taken inside the write below, for the reason on
+         * AtomicWrites: the body runs more than once, and "there is exactly one clinician
+         * who could receive this" is a conclusion about the Providers table rather than a
+         * value. Held out here and used inside, it would be a statement about a database
+         * that may have moved on — the same shape as the discard that validated one note
+         * and deleted another.
          */
         var providerId = await ResolveSoleProviderAsync(db, ct);
 
@@ -100,8 +107,8 @@ public static class ConsultationEndpoints
 
         var submittedAtUtc = clock.GetUtcNow().UtcDateTime;
 
-        ConsultationRequest Build() => ConsultationRequest.Submit(
-            providerId.Value,
+        ConsultationRequest Build(long recipientId) => ConsultationRequest.Submit(
+            recipientId,
             request.ParentName,
             request.Email,
             request.Phone,
@@ -122,8 +129,11 @@ public static class ConsultationEndpoints
              * is to post rubbish at it. The instance this produces is deliberately not
              * kept: the one that gets saved is constructed inside the write below, because
              * the helper's contract says an entity may not cross that boundary.
+             *
+             * The recipient it is built against is the first pass's answer, which is fine
+             * here — nothing about the aggregate's bounds depends on WHOSE row it is.
              */
-            _ = Build();
+            _ = Build(providerId.Value);
         }
         catch (ArgumentException ex)
         {
@@ -150,15 +160,38 @@ public static class ConsultationEndpoints
          *
          * WriteAtomicallyAsync rather than two saves, for the reasons on the helper: the
          * transaction lives inside the retrying execution strategy, the change tracker is
-         * cleared on every attempt, and the commit runs on CancellationToken.None (D075).
-         * Its contract on this block is that the block RUNS MORE THAN ONCE — so the entity
-         * is constructed above and re-added here rather than carried across attempts, and
-         * the audit event is built inside.
+         * cleared on every attempt, the retry loop gets the caller's token, and the commit
+         * runs on CancellationToken.None (D075). Its contract on this block is that the
+         * block RUNS MORE THAN ONCE — so the entity is constructed here rather than
+         * carried across attempts, the audit event is built inside, and the question of
+         * who receives the enquiry is asked inside.
          */
         var publicId = Guid.Empty;
+        var nobodyToReceiveIt = false;
 
         await db.WriteAtomicallyAsync(async attempt =>
         {
+            // Reset per attempt: a conclusion from a previous attempt is exactly what the
+            // helper's contract says may not survive into this one.
+            nobodyToReceiveIt = false;
+
+            /*
+             * RE-RESOLVED, against the Providers table as it stands now.
+             *
+             * The first pass happened before the transaction, and a second clinician
+             * activated in between makes "the sole active provider" a question nobody has
+             * answered — which D078 refuses rather than guesses. Held out from the first
+             * pass, the enquiry would commit against whoever was sole a moment earlier and
+             * land in front of nobody.
+             */
+            var recipientId = await ResolveSoleProviderAsync(db, attempt);
+
+            if (recipientId is null)
+            {
+                nobodyToReceiveIt = true;
+                return;
+            }
+
             /*
              * A FRESH ENTITY PER ATTEMPT, and the id read back OUT rather than fixed in.
              *
@@ -172,7 +205,7 @@ public static class ConsultationEndpoints
              * caller must be told the id that is actually in the table, and nothing else
              * ever saw the abandoned one.
              */
-            var attempted = Build();
+            var attempted = Build(recipientId.Value);
 
             db.ConsultationRequests.Add(attempted);
             await db.SaveChangesAsync(attempt);
@@ -197,12 +230,21 @@ public static class ConsultationEndpoints
              */
             await audit.WriteAsync(AuditEvent.Record(
                 AuditEventType.ConsultationRequestReceived, AuditOutcome.Success,
-                providerId: providerId,
+                providerId: recipientId,
                 entityType: nameof(ConsultationRequest),
                 entityPublicId: attempted.PublicId,
                 metadata:
                     $"source=public-form;sourceIpHash={attempted.SourceIpHash ?? "none"}"));
         }, ct);
+
+        // The same 503 the first pass would have given, decided a moment later. Nothing was
+        // written, so nothing is announced and the parent is told to ring.
+        if (nobodyToReceiveIt)
+        {
+            return Results.Problem(
+                detail: NoProviderToReceiveIt,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         /*
          * NOTIFIED AFTER THE COMMIT, AND NOT INSIDE IT.

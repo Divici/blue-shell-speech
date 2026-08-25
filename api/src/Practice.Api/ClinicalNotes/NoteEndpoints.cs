@@ -368,69 +368,22 @@ public static class NoteEndpoints
         }
 
         /*
-         * THE ORDER OF THE THREE REFUSALS IS THE ANSWER TO TWO SEPARATE QUESTIONS.
+         * A CHEAP FIRST PASS, so a refusal never opens a transaction.
          *
-         * Status first, then lineage, then content — because the audit vocabulary
-         * describes WHAT THE ROW IS and the sentence describes WHAT TO DO NEXT, and
-         * asking about lineage first got both wrong for the same note.
-         *
-         *   status  — signed or superseded. A signed amendment is a signed clinical
-         *             record; it used to audit as `amendment`, so a query for "attempts to
-         *             delete a signed record" was short by exactly the set of amended —
-         *             i.e. contested — records, and the copy asked a clinician to correct
-         *             and sign a note that was already signed.
-         *   lineage — a DRAFT that supersedes something: an amendment being written. This
-         *             still has to come before the content branch, because clearing an
-         *             amendment is an ordinary edit and leaves a Draft with four empty
-         *             sections — the branch below would then tell her the note "has
-         *             something written in it" and ask her to clear what is already clear.
-         *             The sequence D069 closed: sign v1, amend, empty, delete.
-         *   content — everything left: a plain draft somebody has written in.
-         *
-         * Written HERE as well as in the aggregate on the D064 principle that the rule
-         * exists in three places so no single loosening removes it.
+         * The answer that counts is the one taken inside the write below, against the row
+         * actually being deleted. This one exists so the ordinary refusals — a signed
+         * note, an amendment, a draft with content — cost one indexed read rather than a
+         * transaction and a connection held across it. Same reasoning as the throwaway
+         * validation in SubmitConsultationRequest: the cheapest way to hold a connection
+         * open against a scale-to-zero container should not be to ask for something the
+         * API was always going to refuse.
          */
-        if (note.Status != NoteStatus.Draft)
+        var refusal = RefusalToDiscard(note);
+
+        if (refusal is not null)
         {
-            await AuditRefusedDiscardAsync(audit, provider, publicId, "signed");
-
-            /*
-             * The advice has to be one the API will accept.
-             *
-             * Amend() refuses a version that has already been superseded — the corrections
-             * go on the current one — so telling a superseded v1 to "amend it instead"
-             * walks a clinician straight into a second refusal, at which point the record
-             * looks broken rather than the version looking wrong.
-             */
-            return Results.Conflict(new
-            {
-                message = note.IsCurrent
-                    ? "This note is signed. A signed clinical record is never deleted — amend it instead."
-                    : "This version was signed and has since been replaced by a later one. It is kept exactly as it was, and never deleted — open the current version if something still needs correcting.",
-            });
-        }
-
-        if (note.SupersedesNoteId is not null)
-        {
-            await AuditRefusedDiscardAsync(audit, provider, publicId, "amendment");
-
-            return Results.Conflict(new
-            {
-                message = "This is an amendment to a signed note, so it is kept. Discarding it would leave the visit with no current note while the signed version stays on file — correct this one and sign it instead.",
-            });
-        }
-
-        if (!note.CanBeDiscarded)
-        {
-            // Everything else has been ruled out above, so this is a plain draft with
-            // something written in it. "That is not allowed" would tell a clinician
-            // nothing about which rule she met.
-            await AuditRefusedDiscardAsync(audit, provider, publicId, "has-content");
-
-            return Results.Conflict(new
-            {
-                message = "This note has something written in it, so it is kept. Clear the sections and save if you meant to start again.",
-            });
+            await AuditRefusedDiscardAsync(audit, provider, publicId, refusal.Value.Reason);
+            return Results.Conflict(new { message = refusal.Value.Message });
         }
 
         /*
@@ -450,15 +403,20 @@ public static class NoteEndpoints
          * silently batched in with whatever else the caller happened to be tracking.
          *
          * WriteAtomicallyAsync rather than an inline BeginTransactionAsync, because the
-         * retry boundary, the change-tracker reset, and the commit token are three
-         * separate ways to get this wrong and none of them shows up in a passing run. The
-         * reasoning for each is on the helper; the contract it places on this block is
-         * that the block RUNS MORE THAN ONCE and must own everything it writes.
+         * retry boundary, the change-tracker reset, the retry token and the commit token
+         * are four separate ways to get this wrong and none of them shows up in a passing
+         * run. The reasoning for each is on the helper; the contract it places on this
+         * block is that the block RUNS MORE THAN ONCE and must own everything it writes —
+         * including the decisions.
          */
-        var version = note.VersionNumber;
+        (string Reason, string Message)? lateRefusal = null;
 
         await db.WriteAtomicallyAsync(async attempt =>
         {
+            // Reset per attempt: this is a conclusion, and a conclusion from a previous
+            // attempt is exactly what the helper's contract says may not survive.
+            lateRefusal = null;
+
             /*
              * RE-READ, rather than reusing the entity read above.
              *
@@ -478,6 +436,50 @@ public static class NoteEndpoints
              * deletion, one row: writing a second here would say it happened twice.
              */
             if (doomed is null) return;
+
+            /*
+             * ASKED AGAIN, OF THE ROW BEING DELETED. This is the guard, not the pass above.
+             *
+             * The check above was about `note`, which the change-tracker reset detached
+             * before this body ever ran. What gets removed is `doomed`, and the two are
+             * the same record but not necessarily the same CONTENT: Michelle taps Discard
+             * on a draft she has not written in, and the editor's autosave lands
+             * PUT /notes/{id} with a child's session in it while this request is between
+             * its two reads.
+             *
+             * Before D075's helper, EF's DELETE carried the RowVersion of the row that had
+             * been checked, so a WHERE clause that no longer matched raised
+             * DbUpdateConcurrencyException and nothing was destroyed. The re-read carries
+             * the CURRENT RowVersion, so the DELETE matches — optimistic concurrency
+             * stopped defending the check, because the check was no longer about the row
+             * being deleted.
+             *
+             * What was left was TR_ClinicalNotes_PreventDeletingRealNotes, one layer of
+             * the three D064 deliberately built, answering with a rolled-back transaction
+             * and a 500 — and with nothing at all in AuditEvents, because the success row
+             * is inside the rollback and the refusal helper is not on that path. The
+             * clinician sees a failure with a trace id where the honest answer is "this
+             * note has something in it now".
+             */
+            lateRefusal = RefusalToDiscard(doomed);
+
+            if (lateRefusal is not null)
+            {
+                /*
+                 * INSIDE the transaction, which then commits carrying only this row.
+                 *
+                 * The refusal is the whole of the write, so there is nothing for it to be
+                 * atomic with — but it must not be rolled back either, and returning here
+                 * is what leaves the transaction with one audit row to commit. The near
+                 * miss is the interesting row: a clinical record was one statement away
+                 * from being deleted.
+                 */
+                await AuditRefusedDiscardAsync(
+                    audit, provider, publicId, lateRefusal.Value.Reason);
+                return;
+            }
+
+            var version = doomed.VersionNumber;
 
             db.ClinicalNotes.Remove(doomed);
             await db.SaveChangesAsync(attempt);
@@ -500,6 +502,13 @@ public static class NoteEndpoints
                 metadata: $"version={version}"));
         }, ct);
 
+        // The same 409 the first pass would have returned, decided a moment later. A race
+        // the clinician caused herself reads as a refusal she can act on, not as a fault.
+        if (lateRefusal is not null)
+        {
+            return Results.Conflict(new { message = lateRefusal.Value.Message });
+        }
+
         /*
          * A body, not 204.
          *
@@ -508,6 +517,72 @@ public static class NoteEndpoints
          * happened. Same reason the goal transitions answer with one.
          */
         return Results.Ok(new { PublicId = publicId });
+    }
+
+    /// <summary>
+    /// Why this row may not be discarded — the audit reason and the sentence the clinician
+    /// reads — or null when it may.
+    ///
+    /// ONE PREDICATE, ASKED TWICE. The endpoint asks it before opening a transaction and
+    /// again inside, against the row actually being removed. Two copies of these branches
+    /// would be two copies to keep in step, and the branch that drifted would be the one
+    /// standing between a DELETE and a child's clinical record.
+    ///
+    /// THE ORDER OF THE THREE REFUSALS IS THE ANSWER TO TWO SEPARATE QUESTIONS.
+    ///
+    /// Status first, then lineage, then content — because the audit vocabulary describes
+    /// WHAT THE ROW IS and the sentence describes WHAT TO DO NEXT, and asking about
+    /// lineage first got both wrong for the same note.
+    ///
+    ///   status  — signed or superseded. A signed amendment is a signed clinical record;
+    ///             it used to audit as `amendment`, so a query for "attempts to delete a
+    ///             signed record" was short by exactly the set of amended — i.e. contested
+    ///             — records, and the copy asked a clinician to correct and sign a note
+    ///             that was already signed.
+    ///   lineage — a DRAFT that supersedes something: an amendment being written. This
+    ///             still has to come before the content branch, because clearing an
+    ///             amendment is an ordinary edit and leaves a Draft with four empty
+    ///             sections — the content branch would then tell her the note "has
+    ///             something written in it" and ask her to clear what is already clear.
+    ///             The sequence D069 closed: sign v1, amend, empty, delete.
+    ///   content — everything left: a plain draft somebody has written in.
+    ///
+    /// Written HERE as well as in the aggregate on the D064 principle that the rule exists
+    /// in three places so no single loosening removes it.
+    /// </summary>
+    private static (string Reason, string Message)? RefusalToDiscard(ClinicalNote note)
+    {
+        if (note.Status != NoteStatus.Draft)
+        {
+            /*
+             * The advice has to be one the API will accept.
+             *
+             * Amend() refuses a version that has already been superseded — the corrections
+             * go on the current one — so telling a superseded v1 to "amend it instead"
+             * walks a clinician straight into a second refusal, at which point the record
+             * looks broken rather than the version looking wrong.
+             */
+            return ("signed", note.IsCurrent
+                ? "This note is signed. A signed clinical record is never deleted — amend it instead."
+                : "This version was signed and has since been replaced by a later one. It is kept exactly as it was, and never deleted — open the current version if something still needs correcting.");
+        }
+
+        if (note.SupersedesNoteId is not null)
+        {
+            return ("amendment",
+                "This is an amendment to a signed note, so it is kept. Discarding it would leave the visit with no current note while the signed version stays on file — correct this one and sign it instead.");
+        }
+
+        if (!note.CanBeDiscarded)
+        {
+            // Everything else has been ruled out above, so this is a plain draft with
+            // something written in it. "That is not allowed" would tell a clinician
+            // nothing about which rule she met.
+            return ("has-content",
+                "This note has something written in it, so it is kept. Clear the sections and save if you meant to start again.");
+        }
+
+        return null;
     }
 
     /// <summary>

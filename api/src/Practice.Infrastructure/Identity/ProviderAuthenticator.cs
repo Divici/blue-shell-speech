@@ -273,10 +273,23 @@ public sealed class ProviderAuthenticator(
 /// rule one line at a time. With the parameter present, the analyzer enforces the defect.
 /// Removing it is the only version of this fix the toolchain agrees with.
 ///
-/// The cost is real and small: a write that cannot be cancelled holds its connection until
-/// the command timeout if the database is wedged, on a request nobody is waiting for. The
-/// alternative is an audit trail with a survivorship bias toward uninterrupted requests,
-/// which is not an audit trail (docs/SECURITY.md §Audit).
+/// THE COST, STATED PROPERLY. A write that cannot be cancelled cannot be stopped by the
+/// request timeout either — that policy cancels HttpContext.RequestAborted, and this write
+/// holds no token to cancel. Against a wedged database it is bounded by
+/// DatabaseTimeouts.CommandSeconds multiplied by the retry budget in AddInfrastructure —
+/// six attempts, up to ten seconds of backoff between them — so the ceiling is minutes,
+/// not thirty seconds, on a request nobody is waiting for.
+///
+/// This paragraph used to say "holds its connection until the command timeout", which
+/// named a bound that no configuration set at all: AddInfrastructure configured no command
+/// timeout, so the number was SqlClient's default and the sentence read as a decision
+/// somebody had taken. That is D072's defect class — a control described in a comment and
+/// absent from the code reads as STRONGER than no control, because the next person checks
+/// whether the problem was considered rather than whether it was solved. The timeout is
+/// configured now, and the arithmetic above is the honest version of the claim.
+///
+/// It is still the right trade. The alternative is an audit trail with a survivorship bias
+/// toward uninterrupted requests, which is not an audit trail (docs/SECURITY.md §Audit).
 /// </summary>
 public interface IAuditWriter
 {

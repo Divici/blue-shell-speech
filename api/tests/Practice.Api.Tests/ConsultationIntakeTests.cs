@@ -387,6 +387,62 @@ public sealed class ConsultationIntakeTests(SqlServerFixture sql) : IAsyncLifeti
     }
 
     /// <summary>
+    /// The second clinician arriving mid-write is the same unanswered question, and gets
+    /// the same answer.
+    ///
+    /// THE SIBLING OF THE DISCARD REGRESSION, found by walking the other call site of
+    /// AtomicWrites rather than by anyone reporting it. WriteAtomicallyAsync clears the
+    /// change tracker on every attempt and re-runs the body, so a conclusion drawn OUTSIDE
+    /// the call is a statement about a database that may have moved on — and "there is
+    /// exactly one clinician who could receive this" is a conclusion, not a value. Resolved
+    /// once outside, the enquiry commits against whoever happened to be sole a moment
+    /// earlier, which is precisely the silent answer D078 exists to refuse.
+    ///
+    /// The window is small and the outcome is not: an enquiry landing on a clinician
+    /// nobody chose is discovered when a family says they never heard back.
+    ///
+    /// Control: the ResolveSoleProviderAsync call INSIDE the WriteAtomicallyAsync body in
+    /// SubmitConsultationRequest.
+    /// Deleted — the provider resolved only once, before the call — → red, "Assert.Equal()
+    /// Failure: Values differ, Expected: ServiceUnavailable, Actual: Created": the
+    /// interleaved activation is never seen, because with one resolve there is no second
+    /// read for it to land in front of.
+    /// </summary>
+    [Fact]
+    public async Task An_enquiry_is_refused_when_a_second_clinician_arrives_mid_write()
+    {
+        await SeedActiveProvidersAsync(1);
+
+        async Task ASecondClinicianIsActivated()
+        {
+            await using var db = DbFor(null);
+
+            db.Providers.Add(Provider.Create(
+                $"user-{Guid.NewGuid():N}", "Clinician 2", "M.S., CCC-SLP", "SLP-3", "MD"));
+
+            await db.SaveChangesAsync();
+        }
+
+        var interleave = new InterleavesOneWriteBeforeTheSecondRead(
+            "Providers", ASecondClinicianIsActivated);
+
+        using var api = Api(extra: FailureHarness.With(_connectionString, interleave));
+        using var client = api.CreateClient();
+
+        // After the host is up: the seeder asks whether a provider exists at startup.
+        interleave.Arm();
+
+        using var response = await client.PostAsJsonAsync(
+            "/consultation-requests", NewSubmission());
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(0, await RequestCountAsync());
+
+        // And no parent is told to expect a call that nobody is going to make.
+        Assert.Empty(_notifications.Notified);
+    }
+
+    /// <summary>
     /// An anonymous caller cannot choose a tenant.
     ///
     /// Every other route in this API takes the provider from X-Provider-Id, which the BFF

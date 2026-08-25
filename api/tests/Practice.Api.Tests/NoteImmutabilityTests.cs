@@ -743,8 +743,10 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// <summary>
     /// The endpoint layer.
     ///
-    /// Control: NoteEndpoints.DiscardDraft — the `note.SupersedesNoteId is not null`
-    /// branch.
+    /// Control: NoteEndpoints.RefusalToDiscard — the `note.SupersedesNoteId is not null`
+    /// branch. (It was inline in DiscardDraft when this line was written; the three
+    /// refusals moved into one predicate so the transaction body could ask them again, and
+    /// the deletion was re-run against the new home rather than assumed — D077.)
     /// Deleted → red on Assert.Contains("amendment", …), because the aggregate still
     /// refuses but the 409 then explains itself as "this note has something written in
     /// it", telling a clinician to clear four sections that are already clear.
@@ -1093,7 +1095,9 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// is a different sentence about what someone tried to remove: a draft with clinical
     /// content in it, a signed note, and an amendment to one.
     ///
-    /// Control: DiscardDraft's AuditRefusedDiscardAsync calls.
+    /// Control: DiscardDraft's AuditRefusedDiscardAsync call on the refusal returned by
+    /// RefusalToDiscard. (Three calls when this line was written, one now that the three
+    /// branches are one predicate; re-run against the new shape — D077.)
     /// Deleted → red on Assert.Single(events), "The collection was empty".
     /// </summary>
     [Fact]
@@ -1252,6 +1256,110 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
         var only = Assert.Single(await DiscardEventsAsync(note.PublicId));
         Assert.Equal(AuditOutcome.Success, only.Outcome);
         Assert.Contains("version=1", only.Metadata!, StringComparison.Ordinal);
+    }
+
+    // --------------------- discarding the row that was actually checked (1.14 F1)
+
+    /*
+     * THE ROW THAT WAS VALIDATED AND THE ROW THAT IS DELETED MUST BE THE SAME ROW.
+     *
+     * A regression, and the fix that caused it is one file away. WriteAtomicallyAsync
+     * clears the change tracker at the top of every attempt, which is what stopped one
+     * deletion writing two audit rows (D075) — and it also detaches the note this endpoint
+     * read and checked. The body re-reads, so the checks and the delete stopped being
+     * about the same object.
+     *
+     * The sequence: Michelle taps Discard on a draft she has not written in, and the
+     * editor's autosave lands PUT /notes/{id} with real clinical text in the gap between
+     * the two reads. Before the helper existed, EF's DELETE carried the RowVersion from
+     * the entity the endpoint had checked, so the WHERE clause no longer matched and the
+     * save raised DbUpdateConcurrencyException. After it, the re-read carries the CURRENT
+     * RowVersion and the DELETE matches — the guard that used to catch this now agrees
+     * with it.
+     *
+     * What was left standing was the trigger, one layer of the three D064 built, answering
+     * a race with a 500 and — because the success audit row is inside the transaction the
+     * trigger rolls back, and the refusal helper never runs on that path — with NOTHING in
+     * AuditEvents. A clinical note nearly deleted, and no record that anything was tried.
+     */
+
+    /// <summary>
+    /// The autosave lands mid-discard: the note survives, the caller is told why, and the
+    /// attempt is on file.
+    ///
+    /// Forced with an interceptor rather than raced, for the reason on the harness: two
+    /// live requests reproduce this ordering once in thousands of runs and never in CI.
+    /// The PUT goes through a factory of its own so its own reads are not counted.
+    ///
+    /// All three assertions are the finding. Today's code answers 500 with an empty
+    /// AuditEvents table; the note survives either way, because the trigger is doing the
+    /// work the endpoint stopped doing.
+    ///
+    /// Control: NoteEndpoints.DiscardDraft — the RefusalToDiscard(doomed) re-check inside
+    /// the WriteAtomicallyAsync body.
+    /// Deleted → red on the first assertion, "Assert.Equal() Failure: Values differ,
+    /// Expected: Conflict, Actual: InternalServerError" — the DELETE is issued, the trigger
+    /// rolls the transaction back, and AuditEvents holds nothing at all.
+    /// </summary>
+    [Fact]
+    public async Task An_autosave_landing_mid_discard_is_refused_rather_than_deleted()
+    {
+        var providerPublicId = await SeedProviderAsync();
+
+        using var client = ClientFor(providerPublicId);
+        var visit = await SeedVisitAsync(client);
+
+        using var created = await client.PostAsJsonAsync("/notes",
+            new CreateNoteRequest(visit, "", "", "", ""));
+        var note = (await created.Content.ReadFromJsonAsync<NoteDto>())!;
+
+        const string Autosaved = "Mum reports Maya used 'want juice' at home.";
+
+        async Task TheAutosaveLands()
+        {
+            using var saved = await client.PutAsJsonAsync($"/notes/{note.PublicId}",
+                new UpdateNoteRequest(Autosaved, "", "", ""));
+            saved.EnsureSuccessStatusCode();
+        }
+
+        var interleave =
+            new InterleavesOneWriteBeforeTheSecondRead("ClinicalNotes", TheAutosaveLands);
+
+        using var racing = new PracticeApiFactory(
+            sql.ConnectionString, FailureHarness.With(sql.ConnectionString, interleave));
+
+        using var racingClient = ClientFor(racing, providerPublicId);
+
+        // After the host is up, so nothing it read on startup is counted.
+        interleave.Arm();
+
+        using var discard = await racingClient.DeleteAsync($"/notes/{note.PublicId}");
+
+        // A race the clinician caused herself, answered as a refusal she can read — not as
+        // a failure with a trace id.
+        Assert.Equal(HttpStatusCode.Conflict, discard.StatusCode);
+
+        // The note, and every character the autosave put in it.
+        Assert.Equal(1, await NoteCountForVisitAsync(visit));
+        Assert.Equal(Autosaved, await SubjectiveAsync(note.PublicId));
+
+        // The near-miss is on file. This is the row that answers "was a clinical record
+        // nearly removed", and it is the one the trigger path never wrote.
+        var refusal = Assert.Single(await DiscardEventsAsync(note.PublicId));
+        Assert.Equal(AuditOutcome.Failure, refusal.Outcome);
+        Assert.Contains("has-content", refusal.Metadata!, StringComparison.Ordinal);
+    }
+
+    /// <summary>The note's Subjective section, read past tenancy at the raw row.</summary>
+    private async Task<string> SubjectiveAsync(Guid notePublicId)
+    {
+        using var scope = _factory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PracticeDbContext>();
+
+        return await db.ClinicalNotes.IgnoreQueryFilters().AsNoTracking()
+            .Where(n => n.PublicId == notePublicId)
+            .Select(n => n.Subjective)
+            .SingleAsync();
     }
 
     // -------------------------- the audit that outlives the connection (F1)
@@ -1485,8 +1593,10 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// still has to come before the emptiness one — a cleared amendment is a Draft with
     /// four empty sections — so the order is status, then lineage, then content.
     ///
-    /// Control: NoteEndpoints.DiscardDraft — the `note.Status != NoteStatus.Draft` branch
-    /// standing ahead of the `note.SupersedesNoteId is not null` branch.
+    /// Control: NoteEndpoints.RefusalToDiscard — the `note.Status != NoteStatus.Draft`
+    /// branch standing ahead of the `note.SupersedesNoteId is not null` branch. (Inline in
+    /// DiscardDraft when this line was written; deletion re-run against the predicate the
+    /// two are now in — D077.)
     /// Deleted → red on Assert.Contains("reason=signed", …), the metadata reading
     /// "refused;reason=amendment".
     /// </summary>
@@ -1532,8 +1642,9 @@ public sealed class NoteImmutabilityTests(SqlServerFixture sql) : IDisposable
     /// to a second refusal is worse than a bare "no" — she now believes the record is
     /// broken rather than that she is on the wrong version of it.
     ///
-    /// Control: NoteEndpoints.DiscardDraft — the `note.IsCurrent` branch choosing between
-    /// the two signed sentences.
+    /// Control: NoteEndpoints.RefusalToDiscard — the `note.IsCurrent` branch choosing
+    /// between the two signed sentences. (Inline in DiscardDraft when this line was
+    /// written; deletion re-run against its new home — D077.)
     /// Deleted → red on Assert.DoesNotContain("amend it instead", …), which reads
     /// "String.DoesNotContain() Failure: Sub-string found".
     /// </summary>
