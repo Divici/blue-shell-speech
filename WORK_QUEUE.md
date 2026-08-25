@@ -52,6 +52,27 @@ return: every one is a form against an endpoint that already exists and is alrea
       signal** — either the nav is genuinely unreachable on a phone, which is a real
       defect on the page parents actually land on, or the test is desktop-shaped like the
       one in D040.
+- [ ] **1.10 Fix the four reviewer findings against `0d75f37`** — run this BEFORE the
+      remaining Phase 1 forms; F2 is a compliance gap, not a polish item.
+      - **F1** "Start note" renders on every undocumented visit, including `Cancelled`,
+        `NoShow`, and future ones, and posts four empty strings. `Sign()` refuses an empty
+        note, no DELETE endpoint exists, and the filtered unique index blocks replacement —
+        so one mis-tap leaves a permanent "Draft" badge that can only be cleared by writing
+        content onto that child's chart and signing it into immutability.
+      - **F2** Every note read now routes through `GetNoteHistory`, which injects no
+        `IAuditWriter` and returns full S/O/A/P. The audited endpoint
+        (`GetNoteForAppointment`, which writes `PatientViewed`) is now reached only in the
+        409 race. Contradicts `docs/SECURITY.md` §Audit and D012.
+      - **F3** `Starting_a_note_on_another_providers_visit_reveals_nothing` counts by the
+        seeded note's own unique `PublicId`, so it returns 1 whatever the stranger's POST
+        did; the fixture already has a note, so the genuinely exploitable case — a foreign
+        visit with **no** note — is never exercised. Count on `AppointmentId` instead.
+      - **F4** `The_daily_view_carries_no_note_from_another_provider` asserts
+        `Assert.Empty(day.Visits)`, so deleting the `ClinicalNote` query filter outright
+        leaves it green, despite its comment claiming two independent scopes.
+      - Record the standing rule in `DECISIONS.md`: this is the **third** time a test here
+        has asserted a weaker claim than its comment states — see D042 finding #2 and D061.
+        A tenancy test must fail when the filter it names is deleted.
 
 ## Phase 2 — Slice 6, dictation
 

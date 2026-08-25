@@ -26,6 +26,20 @@ orchestrator  ──dispatch──►  builder sub-agent   (fresh context, does 
 A sub-agent's tool output does **not** enter the orchestrator's context — only its final
 report does. That is the whole reason this works.
 
+## One builder at a time — this is forced, not preferred
+
+Sub-agents run in the **same working tree**, not an isolated worktree. A second builder
+would not merely race on the queue file; it would see and stage the first one's
+half-finished edits. Before dispatching, or before touching any file yourself, run
+`git status --porcelain` — a dirty tree means a builder owns it, so keep your hands off.
+
+A **reviewer** is safe to run alongside a builder, because it is read-only and works from a
+fixed commit (`git show <sha>`). Tell it so explicitly, or it will report the builder's
+in-progress edits as findings.
+
+When a reviewer returns findings while a builder holds the tree, write them to the session
+scratchpad rather than the repo, and fold them into `WORK_QUEUE.md` once the tree is clean.
+
 ## Loop, per task
 
 1. Read `WORK_QUEUE.md`. Take the topmost unchecked task.
